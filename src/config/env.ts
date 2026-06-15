@@ -56,6 +56,21 @@ export const config = {
 
   attachments: {
     bucket: str('ATTACHMENT_BUCKET', 'octo-docs-attachments'),
+    // Object-storage presign driver (§3.5). 'local-hmac' mints real, verifiable
+    // HMAC-signed URLs with Node's built-in crypto (no cloud creds/SDK needed);
+    // a real COS/S3 driver can be slotted behind the same ObjectStore interface.
+    driver: str('ATTACHMENT_DRIVER', 'local-hmac'),
+    // Secret keying the HMAC signature over (objectKey + expiry). Dev fallback;
+    // MUST be overridden in production.
+    signingSecret: str('ATTACHMENT_SIGNING_SECRET', 'dev-only-change-me'),
+    // TTL for presigned PUT (upload) URLs.
+    uploadUrlTtlSeconds: num('ATTACHMENT_UPLOAD_URL_TTL_SECONDS', 300),
+    // TTL for re-issued signed GET (read) URLs (§3.5 step 5).
+    readUrlTtlSeconds: num('ATTACHMENT_READ_URL_TTL_SECONDS', 600),
+    // Hard cap on attachment size accepted at presign time.
+    maxSizeBytes: num('ATTACHMENT_MAX_SIZE_BYTES', 20 * 1024 * 1024),
+    // Comma-separated list of allowed MIME prefixes (e.g. 'image/,application/pdf').
+    allowedMimePrefixes: str('ATTACHMENT_ALLOWED_MIME_PREFIXES', 'image/'),
   },
 
   // §9.5 single-document Yjs state hard cap.

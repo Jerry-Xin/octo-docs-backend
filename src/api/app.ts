@@ -38,7 +38,7 @@ export function createApp(): Express {
   api.use(docsRouter) // / , /:docId
   api.use(membersRouter) // /:docId/members ...
   api.use(invitesRouter) // /:docId/invites ... (admin)
-  api.use(attachmentsRouter) // /:docId/attachments/presign
+  api.use(attachmentsRouter) // /:docId/attachments/presign , /:docId/attachments/:attachId
 
   app.use('/api/v1/docs', api)
 
