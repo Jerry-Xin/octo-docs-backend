@@ -6,7 +6,7 @@
  * - extension-logger for structured logs.
  * - onAuthenticate implements §4.1 (verify token, epoch compare, role, readOnly).
  * - beforeHandleMessage does the per-principal write recheck (§4.5 step 4).
- * - onAwarenessUpdate validates presence identity + fields (§8.3.1).
+ * - beforeHandleAwareness validates presence identity + fields (§8.3.1).
  */
 import { Server } from '@hocuspocus/server'
 import { Database } from '@hocuspocus/extension-database'
@@ -32,6 +32,43 @@ export function setEpochWatermark(documentName: string, epoch: number): void {
 }
 
 const COLOR_RE = /^#[0-9a-fA-F]{6}$/
+
+/**
+ * §8.3.1 presence identity + field validation — source-scoped and NON-FATAL.
+ *
+ * `beforeHandleAwareness` hands us the awareness states decoded from THIS
+ * source connection's inbound frame, keyed by Yjs clientId, as a MUTABLE map
+ * (not the full broadcast set). So every entry here is something this very
+ * connection is adding/updating; we validate only those and never touch other
+ * peers' pre-existing presence — which is why legitimate multi-user cursors
+ * flow through untouched.
+ *
+ * On any failure (impersonated identity, bad color, oversized/non-string name)
+ * we DROP the offending clientId from the map — rejecting that part of the
+ * frame. We MUST NOT throw: a malformed or impostor awareness frame must never
+ * crash the process or break other users' live collaboration (the prior
+ * implementation iterated the full broadcast set and threw, which crashed the
+ * whole backend the moment a second user joined — a remotely triggerable DoS).
+ */
+export function validateAwarenessStates(
+  states: Map<number, Record<string, unknown>>,
+  ctx: AuthContext | undefined,
+): void {
+  if (!ctx) return // server-internal awareness (DirectConnection) carries no client ctx
+  for (const [clientId, state] of states) {
+    const user = (state as { user?: { id?: unknown; name?: unknown; color?: unknown } }).user
+    if (!user) continue // non-presence awareness data — nothing to validate
+    // identity must not be impersonated; color a valid hex (no CSS injection);
+    // name a string <= 64 chars.
+    const idOk = user.id === ctx.user.id
+    const colorOk = typeof user.color === 'string' && COLOR_RE.test(user.color)
+    const nameOk = typeof user.name === 'string' && user.name.length <= 64
+    if (!idOk || !colorOk || !nameOk) {
+      // Reject only this offending state; the rest of the frame is broadcast.
+      states.delete(clientId)
+    }
+  }
+}
 
 export function createServer() {
   return new Server({
@@ -112,25 +149,13 @@ export function createServer() {
     },
 
     // §8.3.1 awareness identity + field validation (MUST-level).
-    async onAwarenessUpdate(data) {
-      // onAwarenessUpdate carries the source connection (not a top-level
-      // context); server-internal awareness has no client connection.
-      const ctx = data.connection?.context as AuthContext | undefined
-      if (!ctx) return
-      for (const s of data.states) {
-        const user = (s as { user?: { id?: unknown; name?: unknown; color?: unknown } }).user
-        if (!user) continue
-        // identity must not be impersonated.
-        if (user.id !== ctx.user.id) throw new Error('awareness identity mismatch')
-        // color must be a valid hex (prevents CSS injection).
-        if (typeof user.color !== 'string' || !COLOR_RE.test(user.color)) {
-          throw new Error('awareness color invalid')
-        }
-        // name must be a string <= 64 chars.
-        if (typeof user.name !== 'string' || user.name.length > 64) {
-          throw new Error('awareness name invalid')
-        }
-      }
+    // We use beforeHandleAwareness (not onAwarenessUpdate): its `states` map is
+    // the source connection's OWN inbound frame (keyed by clientId) and is
+    // mutable, so dropping an entry rejects just that part of the frame and the
+    // broadcast reflects it — clean source-scoped, reject-the-frame semantics
+    // with no way to crash the process. See validateAwarenessStates above.
+    async beforeHandleAwareness(data) {
+      validateAwarenessStates(data.states, data.context as AuthContext | undefined)
     },
   })
 }

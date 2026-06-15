@@ -12,6 +12,8 @@
  * scaffold.
  */
 import { Redis } from 'ioredis'
+// B3: load .env before config/env.js is evaluated (must be the first import).
+import './config/loadEnv.js'
 import { config } from './config/env.js'
 import { createServer, setEpochWatermark } from './collab/server.js'
 import { createApp } from './api/app.js'
@@ -20,6 +22,19 @@ import { closePool } from './db/pool.js'
 import { closeRedis } from './db/redis.js'
 
 async function main(): Promise<void> {
+  // B1 safety backstop: a stray throw/rejection inside an async hook (e.g. a
+  // Hocuspocus awareness/sync callback) must never silently kill the server.
+  // We log and KEEP SERVING — this is deliberately NOT a shutdown path; the
+  // SIGTERM/SIGINT handlers below own graceful shutdown.
+  process.on('uncaughtException', (err) => {
+    // eslint-disable-next-line no-console
+    console.error('[octo-docs] uncaughtException (non-fatal, still serving):', err)
+  })
+  process.on('unhandledRejection', (reason) => {
+    // eslint-disable-next-line no-console
+    console.error('[octo-docs] unhandledRejection (non-fatal, still serving):', reason)
+  })
+
   const hocuspocus = createServer()
 
   // Subscribe to epoch invalidation events (§4.5 step 3). On an event we drop
