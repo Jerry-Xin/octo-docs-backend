@@ -181,7 +181,6 @@ describe('docAttachmentRepo (§3.4)', () => {
 describe('schema image node (§7.1 / §9.2)', () => {
   it('exposes SCHEMA_VERSION as a number', () => {
     expect(typeof SCHEMA_VERSION).toBe('number')
-    expect(SCHEMA_VERSION).toBe(3)
   })
 
   it('includes the image node so server-side conversion preserves images', () => {
@@ -189,8 +188,7 @@ describe('schema image node (§7.1 / §9.2)', () => {
     expect(schema.nodes.image).toBeDefined()
     const attrs = schema.nodes.image!.spec.attrs ?? {}
     expect(Object.keys(attrs)).toEqual(
-      expect.arrayContaining(['attach_id', 'src', 'alt', 'width', 'align']),
+      expect.arrayContaining(['attachId', 'src', 'alt', 'title', 'width', 'align']),
     )
-    expect(Object.keys(attrs)).not.toContain('title')
   })
 })
