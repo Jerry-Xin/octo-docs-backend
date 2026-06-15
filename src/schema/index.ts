@@ -54,20 +54,20 @@ export function buildSchema(): Schema {
         toDOM: (node) => [`h${node.attrs.level as number}`, 0],
       },
       // Block image node (§3.2 / §3.5). The Y.Doc stores only a reference —
-      // `attachId` (preferred) or a controlled `src` URL — NEVER base64, so
+      // `attach_id` (preferred) or a controlled `src` URL — NEVER base64, so
       // CRDT updates stay small (§3.5 step 3). Adding this node here is the
-      // backend half of the @octo/docs-schema lockstep (see SCHEMA_VERSION);
-      // it must match the frontend Tiptap image extension's attrs.
+      // backend half of the @octo/docs-schema lockstep (SCHEMA_VERSION 2, per
+      // SCHEMA-SPEC.md segment 2); it must match the frontend Tiptap image
+      // extension's attrs.
       image: {
         group: 'block',
         inline: false,
         atom: true,
         draggable: true,
         attrs: {
-          attachId: { default: null },
+          attach_id: { default: null },
           src: { default: null },
           alt: { default: null },
-          title: { default: null },
           width: { default: null },
           align: { default: null },
         },
@@ -79,10 +79,9 @@ export function buildSchema(): Schema {
               // this module needs no DOM lib types (server build has none).
               const el = dom as { getAttribute(name: string): string | null }
               return {
-                attachId: el.getAttribute('data-attach-id'),
+                attach_id: el.getAttribute('data-attach-id'),
                 src: el.getAttribute('src'),
                 alt: el.getAttribute('alt'),
-                title: el.getAttribute('title'),
                 width: el.getAttribute('width'),
                 align: el.getAttribute('data-align'),
               }
@@ -90,12 +89,11 @@ export function buildSchema(): Schema {
           },
         ],
         toDOM: (node) => {
-          const { attachId, src, alt, title, width, align } = node.attrs
+          const { attach_id, src, alt, width, align } = node.attrs
           const attrs: Record<string, string> = {}
-          if (attachId != null) attrs['data-attach-id'] = String(attachId)
+          if (attach_id != null) attrs['data-attach-id'] = String(attach_id)
           if (src != null) attrs['src'] = String(src)
           if (alt != null) attrs['alt'] = String(alt)
-          if (title != null) attrs['title'] = String(title)
           if (width != null) attrs['width'] = String(width)
           if (align != null) attrs['data-align'] = String(align)
           return ['img', attrs]

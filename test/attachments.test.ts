@@ -179,8 +179,9 @@ describe('docAttachmentRepo (§3.4)', () => {
 })
 
 describe('schema image node (§7.1 / §9.2)', () => {
-  it('exposes SCHEMA_VERSION as a number', () => {
+  it('pins SCHEMA_VERSION to 2 (SCHEMA-SPEC segment 2)', () => {
     expect(typeof SCHEMA_VERSION).toBe('number')
+    expect(SCHEMA_VERSION).toBe(2)
   })
 
   it('includes the image node so server-side conversion preserves images', () => {
@@ -188,7 +189,11 @@ describe('schema image node (§7.1 / §9.2)', () => {
     expect(schema.nodes.image).toBeDefined()
     const attrs = schema.nodes.image!.spec.attrs ?? {}
     expect(Object.keys(attrs)).toEqual(
-      expect.arrayContaining(['attachId', 'src', 'alt', 'title', 'width', 'align']),
+      expect.arrayContaining(['attach_id', 'src', 'alt', 'width', 'align']),
     )
+    // snake_case attach_id only — the camelCase attachId and the title attr
+    // were removed to byte-match SCHEMA-SPEC segment 2.
+    expect(attrs).not.toHaveProperty('attachId')
+    expect(attrs).not.toHaveProperty('title')
   })
 })
