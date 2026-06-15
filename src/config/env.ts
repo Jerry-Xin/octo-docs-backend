@@ -24,6 +24,25 @@ function num(name: string, fallback: number): number {
 
 export type OctoIdentityMode = 'http' | 'middleware'
 
+/** Dev-only fallback secret; must never reach production (see requireSafeSigningSecret). */
+const DEV_SIGNING_SECRET = 'dev-only-change-me'
+
+/**
+ * Fail-fast guard: in production the attachment signing secret must be a real
+ * override, never the dev default. Returning the secret keeps the typed-config
+ * pattern (call site stays a single expression) while throwing at config load
+ * if prod is misconfigured. NODE_ENV is read here so the rest of the codebase
+ * still never touches process.env directly.
+ */
+export function requireSafeSigningSecret(secret: string): string {
+  if (secret === DEV_SIGNING_SECRET && process.env.NODE_ENV === 'production') {
+    throw new Error(
+      'ATTACHMENT_SIGNING_SECRET must be overridden in production (refusing to run with the dev default)',
+    )
+  }
+  return secret
+}
+
 export const config = {
   hostname: str('HOSTNAME', 'octo-docs-local'),
   hocuspocusPort: num('HOCUSPOCUS_PORT', 1234),
@@ -61,8 +80,8 @@ export const config = {
     // a real COS/S3 driver can be slotted behind the same ObjectStore interface.
     driver: str('ATTACHMENT_DRIVER', 'local-hmac'),
     // Secret keying the HMAC signature over (objectKey + expiry). Dev fallback;
-    // MUST be overridden in production.
-    signingSecret: str('ATTACHMENT_SIGNING_SECRET', 'dev-only-change-me'),
+    // MUST be overridden in production (enforced via requireSafeSigningSecret).
+    signingSecret: requireSafeSigningSecret(str('ATTACHMENT_SIGNING_SECRET', DEV_SIGNING_SECRET)),
     // TTL for presigned PUT (upload) URLs.
     uploadUrlTtlSeconds: num('ATTACHMENT_UPLOAD_URL_TTL_SECONDS', 300),
     // TTL for re-issued signed GET (read) URLs (§3.5 step 5).
@@ -71,6 +90,11 @@ export const config = {
     maxSizeBytes: num('ATTACHMENT_MAX_SIZE_BYTES', 20 * 1024 * 1024),
     // Comma-separated list of allowed MIME prefixes (e.g. 'image/,application/pdf').
     allowedMimePrefixes: str('ATTACHMENT_ALLOWED_MIME_PREFIXES', 'image/'),
+    // Comma-separated MIME denylist that takes precedence over the allowed
+    // prefixes. Defaults to blocking image/svg+xml: SVG is an XML document that
+    // can carry inline <script>, so even though it matches the 'image/' prefix
+    // it is an XSS vector when served from our origin (§3.5).
+    blockedMimes: str('ATTACHMENT_BLOCKED_MIMES', 'image/svg+xml'),
   },
 
   // §9.5 single-document Yjs state hard cap.

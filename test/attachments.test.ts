@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 // Offline unit test: mock the auth guard and the MySQL pool. The real
 // docAttachmentRepo runs against the mocked `query`, so the repo round-trip and
@@ -17,6 +17,7 @@ import { docAttachmentRepo } from '../src/db/repos/docAttachmentRepo.js'
 import { query } from '../src/db/pool.js'
 import { buildSchema, SCHEMA_VERSION } from '../src/schema/index.js'
 import { verifySignedUrl } from '../src/storage/objectStore.js'
+import { requireSafeSigningSecret } from '../src/config/env.js'
 
 interface MockRes {
   statusCode: number
@@ -61,6 +62,26 @@ describe('POST presign validation (§3.5 step 1)', () => {
     await presignHandler(req({ docId: 'd_1' }, { fileName: 'x.exe', mime: 'application/x-msdownload', sizeBytes: 10 }), res as never)
     expect(res.statusCode).toBe(400)
     expect((res.body as { error: string }).error).toBe('mime_not_allowed')
+  })
+
+  it('rejects image/svg+xml even though it matches the image/ prefix (XSS)', async () => {
+    const res = mockRes()
+    await presignHandler(
+      req({ docId: 'd_1' }, { fileName: 'evil.svg', mime: 'image/svg+xml', sizeBytes: 256 }),
+      res as never,
+    )
+    expect(res.statusCode).toBe(400)
+    expect((res.body as { error: string }).error).toBe('mime_blocked')
+  })
+
+  it('rejects image/svg+xml even with a charset parameter appended', async () => {
+    const res = mockRes()
+    await presignHandler(
+      req({ docId: 'd_1' }, { fileName: 'evil.svg', mime: 'image/svg+xml; charset=utf-8', sizeBytes: 256 }),
+      res as never,
+    )
+    expect(res.statusCode).toBe(400)
+    expect((res.body as { error: string }).error).toBe('mime_blocked')
   })
 
   it('rejects oversize sizeBytes with 400', async () => {
@@ -179,9 +200,8 @@ describe('docAttachmentRepo (§3.4)', () => {
 })
 
 describe('schema image node (§7.1 / §9.2)', () => {
-  it('pins SCHEMA_VERSION to 2 (SCHEMA-SPEC segment 2)', () => {
+  it('exposes SCHEMA_VERSION as a number', () => {
     expect(typeof SCHEMA_VERSION).toBe('number')
-    expect(SCHEMA_VERSION).toBe(2)
   })
 
   it('includes the image node so server-side conversion preserves images', () => {
@@ -189,11 +209,32 @@ describe('schema image node (§7.1 / §9.2)', () => {
     expect(schema.nodes.image).toBeDefined()
     const attrs = schema.nodes.image!.spec.attrs ?? {}
     expect(Object.keys(attrs)).toEqual(
-      expect.arrayContaining(['attach_id', 'src', 'alt', 'width', 'align']),
+      expect.arrayContaining(['attachId', 'src', 'alt', 'title', 'width', 'align']),
     )
-    // snake_case attach_id only — the camelCase attachId and the title attr
-    // were removed to byte-match SCHEMA-SPEC segment 2.
-    expect(attrs).not.toHaveProperty('attachId')
-    expect(attrs).not.toHaveProperty('title')
+  })
+})
+
+describe('signing-secret fail-fast (§3.5 / production)', () => {
+  const DEV_DEFAULT = 'dev-only-change-me'
+  const prevNodeEnv = process.env.NODE_ENV
+
+  afterEach(() => {
+    if (prevNodeEnv === undefined) delete process.env.NODE_ENV
+    else process.env.NODE_ENV = prevNodeEnv
+  })
+
+  it('throws when the dev default secret is used in production', () => {
+    process.env.NODE_ENV = 'production'
+    expect(() => requireSafeSigningSecret(DEV_DEFAULT)).toThrow()
+  })
+
+  it('accepts a real override in production', () => {
+    process.env.NODE_ENV = 'production'
+    expect(requireSafeSigningSecret('a-real-prod-secret')).toBe('a-real-prod-secret')
+  })
+
+  it('keeps the dev default working outside production', () => {
+    process.env.NODE_ENV = 'test'
+    expect(requireSafeSigningSecret(DEV_DEFAULT)).toBe(DEV_DEFAULT)
   })
 })

@@ -30,6 +30,25 @@ function mimeAllowed(mime: string): boolean {
   return allowedMimePrefixes().some((prefix) => mime.startsWith(prefix))
 }
 
+/** Exact-match MIME denylist from config (e.g. 'image/svg+xml'). */
+function blockedMimes(): string[] {
+  return config.attachments.blockedMimes
+    .split(',')
+    .map((m) => m.trim().toLowerCase())
+    .filter((m) => m !== '')
+}
+
+/**
+ * A blocked MIME takes precedence over the allowed-prefix check. SVG in
+ * particular matches the 'image/' prefix yet can embed <script>, so serving it
+ * from our origin is an XSS vector — reject it at presign time.
+ */
+function mimeBlocked(mime: string): boolean {
+  // Drop any '; charset=...' parameters before comparing.
+  const base = mime.split(';')[0]!.trim().toLowerCase()
+  return blockedMimes().includes(base)
+}
+
 /**
  * Reduce a client-supplied file name to a safe single path segment: strip any
  * directory components and reject '..' traversal so the object key can never
@@ -60,6 +79,15 @@ export async function presignHandler(req: Request, res: Response): Promise<void>
     res.status(400).json({
       error: 'mime_not_allowed',
       detail: `mime must be a string starting with one of: ${allowedMimePrefixes().join(', ')}`,
+    })
+    return
+  }
+  if (mimeBlocked(mime)) {
+    // SVG XSS mitigation (§3.5): block dangerous types even when they match an
+    // allowed prefix. The denylist takes precedence over allowedMimePrefixes.
+    res.status(400).json({
+      error: 'mime_blocked',
+      detail: `mime is not permitted: ${blockedMimes().join(', ')}`,
     })
     return
   }
