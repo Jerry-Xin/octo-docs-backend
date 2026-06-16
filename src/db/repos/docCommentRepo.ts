@@ -158,13 +158,20 @@ export const docCommentRepo = {
    * Non-deleted replies for many thread roots in a single query, oldest first.
    * Lets the list path avoid an N+1 (one listReplies per root); callers group
    * the flat result by parentId. Returns [] without querying when given no ids.
-   * mysql2 expands the `IN (?)` placeholder from the array argument.
+   *
+   * The pool's `query()` helper runs on `.execute()` (a prepared statement), and
+   * mysql2 does NOT expand an array bound to a single `IN (?)` placeholder under
+   * `.execute()` — that array-expansion only happens on `.query()`. So we build
+   * one `?` placeholder per id and pass a FLAT param list (one value per
+   * placeholder); binding the nested array against `IN (?)` would match zero
+   * rows and silently drop every reply.
    */
   async listRepliesForRoots(rootIds: number[]): Promise<DocComment[]> {
     if (rootIds.length === 0) return []
+    const placeholders = rootIds.map(() => '?').join(', ')
     const rows = await query<DocCommentRow>(
-      'SELECT * FROM doc_comment WHERE parent_id IN (?) AND deleted = 0 ORDER BY id ASC',
-      [rootIds],
+      `SELECT * FROM doc_comment WHERE parent_id IN (${placeholders}) AND deleted = 0 ORDER BY id ASC`,
+      rootIds,
     )
     return rows.map(mapRow)
   },
@@ -192,7 +199,16 @@ export const docCommentRepo = {
     await query('UPDATE doc_comment SET deleted = 1 WHERE id = ?', [id])
   },
 
+  /**
+   * Hard delete (admin moderation). Cascades to child replies so a removed
+   * thread root never leaves orphaned reply rows detached from any thread.
+   * Runs both the root row and its replies in one transaction. When the target
+   * is a reply (its id is never another row's parent_id under single-level
+   * nesting), the `parent_id = ?` arm matches nothing and only that one row goes.
+   */
   async hardDelete(id: number): Promise<void> {
-    await query('DELETE FROM doc_comment WHERE id = ?', [id])
+    await transaction(async (tx) => {
+      await tx.query('DELETE FROM doc_comment WHERE id = ? OR parent_id = ?', [id, id])
+    })
   },
 }

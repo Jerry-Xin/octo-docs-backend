@@ -363,13 +363,17 @@ describe('DELETE soft / hard', () => {
   it('hard-deletes for an admin', async () => {
     vi.mocked(query).mockResolvedValueOnce([rootRow()] as never)
     vi.mocked(requireDocRole).mockResolvedValue(adminGuard)
+    // hardDelete runs its cascade DELETE inside transaction(); capture tx.query.
+    const txQ = vi.fn(async () => [])
+    vi.mocked(transaction).mockImplementation((async (fn: (tx: unknown) => unknown) =>
+      fn({ query: txQ })) as never)
     const res = mockRes()
     await deleteCommentHandler(
       req({ uid: 'u_admin', params: { docId: 'd_1', id: '10' }, query: { hard: '1' } }),
       res as never,
     )
     expect(res.statusCode).toBe(200)
-    const del = vi.mocked(query).mock.calls.find((c) => String(c[0]).includes('DELETE FROM doc_comment'))
+    const del = txQ.mock.calls.find((c) => String(c[0]).includes('DELETE FROM doc_comment'))
     expect(del).toBeTruthy()
   })
 })
@@ -490,8 +494,10 @@ describe('GET list', () => {
     // Exactly two queries total: one for roots, one batched for ALL replies (no N+1).
     expect(vi.mocked(query).mock.calls).toHaveLength(2)
     const batchSql = String(vi.mocked(query).mock.calls[1]![0])
-    expect(batchSql).toContain('parent_id IN (?)')
-    expect(vi.mocked(query).mock.calls[1]![1]).toEqual([[10, 20]])
+    // One placeholder PER root id (expanded), and a FLAT param list — mysql2's
+    // `.execute()` path does not expand an array bound to a single `IN (?)`.
+    expect(batchSql).toContain('parent_id IN (?, ?)')
+    expect(vi.mocked(query).mock.calls[1]![1]).toEqual([10, 20])
 
     const body = res.body as { items: Array<{ id: number; replies: Array<{ id: number }> }> }
     expect(body.items).toHaveLength(2)
@@ -549,16 +555,55 @@ describe('docCommentRepo (§3.4)', () => {
     expect(sql).toContain('resolved = 0')
   })
 
-  it('listRepliesForRoots batches with IN (?) and returns [] for no ids', async () => {
-    // Empty input short-circuits without touching the DB.
+  it('listRepliesForRoots expands one placeholder per id with FLAT params', async () => {
+    // Empty input short-circuits without touching the DB (avoids `IN ()`).
     expect(await docCommentRepo.listRepliesForRoots([])).toEqual([])
     expect(vi.mocked(query)).not.toHaveBeenCalled()
-    // Non-empty input passes the id array as a single bound parameter.
+
+    // Two ids => `IN (?, ?)` and a FLAT [10, 20] param list. The pool's query()
+    // runs on `.execute()` (a prepared statement), which does NOT expand an
+    // array bound to a single `IN (?)`; binding the nested [[10, 20]] would
+    // match zero rows and silently drop every reply. This asserts the FIXED
+    // shape and fails on the single-`?` / nested-array regression. (A live
+    // round-trip against MySQL is the belt-and-suspenders check; no usable DB
+    // is reachable in this offline test env, so we assert the shape instead.)
     vi.mocked(query).mockResolvedValueOnce([rootRow({ id: 11, parent_id: 10 })] as never)
     const replies = await docCommentRepo.listRepliesForRoots([10, 20])
-    const sql = String(vi.mocked(query).mock.calls[0]![0])
-    expect(sql).toContain('parent_id IN (?)')
-    expect(vi.mocked(query).mock.calls[0]![1]).toEqual([[10, 20]])
+    const sql2 = String(vi.mocked(query).mock.calls[0]![0])
+    expect(sql2).toContain('parent_id IN (?, ?)')
+    expect(sql2).not.toContain('IN (?)') // not the un-expanded single placeholder
+    expect(sql2).toContain('ORDER BY id ASC')
+    expect(vi.mocked(query).mock.calls[0]![1]).toEqual([10, 20]) // FLAT, not [[10, 20]]
     expect(replies[0]!.parentId).toBe(10)
+
+    // One id => a single `IN (?)` placeholder and a FLAT [10] param list.
+    vi.mocked(query).mockReset()
+    vi.mocked(query).mockResolvedValueOnce([rootRow({ id: 11, parent_id: 10 })] as never)
+    await docCommentRepo.listRepliesForRoots([10])
+    const sql1 = String(vi.mocked(query).mock.calls[0]![0])
+    expect(sql1).toContain('parent_id IN (?)')
+    expect(vi.mocked(query).mock.calls[0]![1]).toEqual([10]) // FLAT, not [[10]]
+  })
+
+  it('hardDelete cascades to child replies in one transaction (reply target deletes only itself)', async () => {
+    // hardDelete runs a single cascade DELETE inside transaction(); capture it.
+    const txQ = vi.fn(async () => [])
+    vi.mocked(transaction).mockImplementation((async (fn: (tx: unknown) => unknown) =>
+      fn({ query: txQ })) as never)
+
+    // Root target (id=10): the statement removes the root AND any row whose
+    // parent_id is 10 (its replies) — no orphans left behind.
+    await docCommentRepo.hardDelete(10)
+    expect(txQ).toHaveBeenCalledTimes(1)
+    const sql = String(txQ.mock.calls[0]![0])
+    expect(sql).toContain('DELETE FROM doc_comment')
+    expect(sql).toContain('id = ? OR parent_id = ?')
+    expect(txQ.mock.calls[0]![1]).toEqual([10, 10])
+
+    // Reply target (id=11): same statement; since no row has parent_id = 11
+    // (single-level nesting), only the reply row itself is deleted.
+    txQ.mockClear()
+    await docCommentRepo.hardDelete(11)
+    expect(txQ.mock.calls[0]![1]).toEqual([11, 11])
   })
 })
