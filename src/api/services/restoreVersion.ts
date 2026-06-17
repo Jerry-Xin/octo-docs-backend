@@ -123,6 +123,7 @@ export async function restoreVersion(input: RestoreInput): Promise<RestoreResult
       documentName: input.documentName,
       kind: KIND_RESTORE_MARKER,
       name: 'Auto-safety before restore',
+      restoredFrom: input.versionId,
       state: safetyState,
       schemaVersion: SCHEMA_VERSION,
       createdBy: input.uid,

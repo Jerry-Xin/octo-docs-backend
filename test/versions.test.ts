@@ -28,7 +28,7 @@ import {
   restoreVersionHandler,
 } from '../src/api/routes/versions.js'
 import { requireDocRole } from '../src/api/guard.js'
-import { docVersionRepo } from '../src/db/repos/docVersionRepo.js'
+import { docVersionRepo, KIND_RESTORE_MARKER } from '../src/db/repos/docVersionRepo.js'
 import { restoreVersion } from '../src/api/services/restoreVersion.js'
 import { persistence } from '../src/collab/persistence.js'
 import { applyRestoreToLiveDoc } from '../src/collab/liveRestore.js'
@@ -156,38 +156,80 @@ describe('role gating (server authority, §4.2 / §5.6)', () => {
 
 // ── wire contract: serialized field names (FE<->BE) ───────────────────────────
 describe('version wire contract (serialized field names)', () => {
-  it('list serializes the version identifier as docVersionSeq and the label as label', async () => {
+  it('list serializes the full row field set (docVersionSeq, kind, label, restoredFrom, ...) and the nextCursor wrapper', async () => {
     vi.mocked(requireDocRole).mockResolvedValue(adminGuard)
     vi.spyOn(docVersionRepo, 'listByDoc').mockResolvedValue({
       items: [
         {
+          id: 43,
+          kind: 3,
+          name: 'Auto-safety before restore',
+          restoredFrom: 12,
+          sizeBytes: 20,
+          schemaVersion: SCHEMA_VERSION,
+          createdAt: new Date(0),
+          createdBy: 'u_2',
+        },
+        {
           id: 42,
-          kind: 1,
+          kind: 2,
           name: 'My snapshot',
+          restoredFrom: null,
           sizeBytes: 10,
           schemaVersion: SCHEMA_VERSION,
           createdAt: new Date(0),
           createdBy: 'u_1',
         },
       ],
-      nextCursor: undefined,
+      nextCursor: 42,
     } as never)
 
     const res = mockRes()
     await listVersionsHandler(req({ docId: 'd_1' }), res as never)
 
-    const body = res.body as { items: Array<Record<string, unknown>> }
-    const item = body.items[0]!
-    expect(item.docVersionSeq).toBe(42)
-    expect(item.label).toBe('My snapshot')
-    // Legacy keys are gone.
-    expect(item).not.toHaveProperty('id')
-    expect(item).not.toHaveProperty('name')
-    // Other fields are preserved.
-    expect(item.sizeBytes).toBe(10)
-    expect(item.schemaVersion).toBe(SCHEMA_VERSION)
+    const body = res.body as { items: Array<Record<string, unknown>>; nextCursor: number | null }
+    // Paginated wrapper carries the rows array and `nextCursor`.
+    expect(body.nextCursor).toBe(42)
+
+    const marker = body.items[0]!
+    // EXACT canonical field set — no more, no less.
+    expect(Object.keys(marker).sort()).toEqual(
+      ['createdAt', 'createdBy', 'docVersionSeq', 'kind', 'label', 'restoredFrom', 'schemaVersion', 'sizeBytes'].sort(),
+    )
+    expect(marker.docVersionSeq).toBe(43)
+    expect(marker.kind).toBe(3)
+    expect(marker.label).toBe('Auto-safety before restore')
+    expect(marker.restoredFrom).toBe(12)
+
+    const named = body.items[1]!
+    expect(named.docVersionSeq).toBe(42)
+    expect(named.label).toBe('My snapshot')
+    expect(named.kind).toBe(2)
+    // Ordinary snapshot was not produced by a restore.
+    expect(named.restoredFrom).toBeNull()
+    // Legacy keys are gone (the frontend drift guard rejects id/name).
+    expect(named).not.toHaveProperty('id')
+    expect(named).not.toHaveProperty('name')
+    expect(named).not.toHaveProperty('safetyVersionId')
+    expect(named.sizeBytes).toBe(10)
+    expect(named.schemaVersion).toBe(SCHEMA_VERSION)
 
     vi.mocked(docVersionRepo.listByDoc).mockRestore()
+  })
+
+  it('list reads pagination from the canonical cursor/limit query params', async () => {
+    vi.mocked(requireDocRole).mockResolvedValue(adminGuard)
+    const listSpy = vi.spyOn(docVersionRepo, 'listByDoc').mockResolvedValue({
+      items: [],
+      nextCursor: null,
+    } as never)
+
+    const res = mockRes()
+    await listVersionsHandler(req({ docId: 'd_1' }, { query: { cursor: '99', limit: '5' } }), res as never)
+
+    expect(listSpy.mock.calls[0]![1]).toMatchObject({ cursor: 99, limit: 5 })
+
+    listSpy.mockRestore()
   })
 
   it('create reads the label from req.body.label and returns docVersionSeq', async () => {
@@ -306,7 +348,7 @@ describe('docVersionRepo gzip round-trip (§4 state_blob)', () => {
       const tx = {
         query: vi.fn(async (sql: string, params?: unknown[]) => {
           if (sql.includes('INSERT INTO doc_version')) {
-            insertedBlob = params![4] as Buffer
+            insertedBlob = params![5] as Buffer
             return []
           }
           if (sql.includes('LAST_INSERT_ID')) return [{ id: 42 }]
@@ -606,6 +648,12 @@ describe('restoreVersion service — safety snapshot (BUG2 rollback)', () => {
       expect(result.newDocVersionSeq).toBe(99)
     }
     expect(createSpy).toHaveBeenCalledTimes(1)
+    // The safety/restore-marker row records the source version it was restored
+    // from, so the list can render "restored from #5".
+    expect(createSpy.mock.calls[0]![1]).toMatchObject({
+      kind: KIND_RESTORE_MARKER,
+      restoredFrom: 5,
+    })
     // The restore is NOT written to yjs_document inside this transaction; the
     // authoritative content write happens on the live document afterwards.
     expect(captured.some((q) => q.includes('INSERT INTO yjs_document'))).toBe(false)

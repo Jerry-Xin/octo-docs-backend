@@ -35,13 +35,16 @@ const MAX_NAME_LEN = 256
  *
  * Wire contract (FE<->BE): the version identifier the client routes on is
  * `docVersionSeq` (the doc-scoped sequence stored as the row id) and the human
- * label is `label`. The internal DB column / row id stays `id`/`name`; only the
- * serialized keys are renamed here so the response matches the frontend.
+ * label is `label`. `restoredFrom` is the source version_seq a restore-marker
+ * row was restored from (null for ordinary snapshots). The internal DB column /
+ * row id stays `id`/`name`; only the serialized keys are renamed here so the
+ * response matches the frontend.
  */
 function toItem(v: {
   id: number
   kind: number
   name: string
+  restoredFrom: number | null
   sizeBytes: number
   schemaVersion: number
   createdAt: Date
@@ -51,10 +54,11 @@ function toItem(v: {
     docVersionSeq: v.id,
     kind: v.kind,
     label: v.name,
+    createdBy: v.createdBy,
+    createdAt: v.createdAt,
     sizeBytes: v.sizeBytes,
     schemaVersion: v.schemaVersion,
-    createdAt: v.createdAt,
-    createdBy: v.createdBy,
+    restoredFrom: v.restoredFrom,
   }
 }
 
