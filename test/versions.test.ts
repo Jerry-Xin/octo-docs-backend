@@ -12,6 +12,12 @@ vi.mock('../src/db/pool.js', () => ({
   query: vi.fn(async () => []),
   transaction: vi.fn(),
 }))
+// The content write happens on the LIVE Hocuspocus document via
+// openDirectConnection; mock that boundary so the service is unit-testable
+// without a running collab server.
+vi.mock('../src/collab/liveRestore.js', () => ({
+  applyRestoreToLiveDoc: vi.fn(async () => {}),
+}))
 
 import {
   listVersionsHandler,
@@ -24,6 +30,8 @@ import {
 import { requireDocRole } from '../src/api/guard.js'
 import { docVersionRepo } from '../src/db/repos/docVersionRepo.js'
 import { restoreVersion } from '../src/api/services/restoreVersion.js'
+import { persistence } from '../src/collab/persistence.js'
+import { applyRestoreToLiveDoc } from '../src/collab/liveRestore.js'
 import { query, transaction } from '../src/db/pool.js'
 import {
   gateSchema,
@@ -103,6 +111,8 @@ beforeEach(() => {
   vi.mocked(query).mockReset()
   vi.mocked(query).mockResolvedValue([] as never)
   vi.mocked(transaction).mockReset()
+  vi.mocked(applyRestoreToLiveDoc).mockReset()
+  vi.mocked(applyRestoreToLiveDoc).mockResolvedValue(undefined)
 })
 
 // ── role gating: the min-role chosen per endpoint ─────────────────────────────
@@ -141,6 +151,101 @@ describe('role gating (server authority, §4.2 / §5.6)', () => {
   it('restore requires admin (boss call)', async () => {
     await restoreVersionHandler(req({ docId: 'd_1', versionId: '1' }), mockRes() as never)
     expect(vi.mocked(requireDocRole).mock.calls[0]![3]).toBe('admin')
+  })
+})
+
+// ── wire contract: serialized field names (FE<->BE) ───────────────────────────
+describe('version wire contract (serialized field names)', () => {
+  it('list serializes the version identifier as docVersionSeq and the label as label', async () => {
+    vi.mocked(requireDocRole).mockResolvedValue(adminGuard)
+    vi.spyOn(docVersionRepo, 'listByDoc').mockResolvedValue({
+      items: [
+        {
+          id: 42,
+          kind: 1,
+          name: 'My snapshot',
+          sizeBytes: 10,
+          schemaVersion: SCHEMA_VERSION,
+          createdAt: new Date(0),
+          createdBy: 'u_1',
+        },
+      ],
+      nextCursor: undefined,
+    } as never)
+
+    const res = mockRes()
+    await listVersionsHandler(req({ docId: 'd_1' }), res as never)
+
+    const body = res.body as { items: Array<Record<string, unknown>> }
+    const item = body.items[0]!
+    expect(item.docVersionSeq).toBe(42)
+    expect(item.label).toBe('My snapshot')
+    // Legacy keys are gone.
+    expect(item).not.toHaveProperty('id')
+    expect(item).not.toHaveProperty('name')
+    // Other fields are preserved.
+    expect(item.sizeBytes).toBe(10)
+    expect(item.schemaVersion).toBe(SCHEMA_VERSION)
+
+    vi.mocked(docVersionRepo.listByDoc).mockRestore()
+  })
+
+  it('create reads the label from req.body.label and returns docVersionSeq', async () => {
+    vi.mocked(requireDocRole).mockResolvedValue(adminGuard)
+    vi.spyOn(persistence, 'fetch').mockResolvedValue(null)
+    const createSpy = vi.spyOn(docVersionRepo, 'create').mockResolvedValue(7)
+
+    const res = mockRes()
+    await createVersionHandler(req({ docId: 'd_1' }, { body: { label: 'Named A' } }), res as never)
+
+    expect(res.statusCode).toBe(201)
+    expect((res.body as { docVersionSeq: number }).docVersionSeq).toBe(7)
+    expect(createSpy.mock.calls[0]![0].name).toBe('Named A')
+
+    createSpy.mockRestore()
+    vi.mocked(persistence.fetch).mockRestore()
+  })
+
+  it('restore response uses restoredFrom and newDocVersionSeq (end-to-end through the handler)', async () => {
+    const documentName = 'octo:s1:f_default:d_1'
+    vi.mocked(requireDocRole).mockResolvedValue(adminGuard)
+    vi.spyOn(docVersionRepo, 'getStateById').mockResolvedValue({
+      version: {
+        id: 5,
+        docId: 'd_1',
+        documentName,
+        kind: 2,
+        name: '',
+        compressed: 1,
+        sizeBytes: 2,
+        schemaVersion: SCHEMA_VERSION,
+        createdAt: new Date(0),
+        createdBy: 'u_1',
+      },
+      state: stateFromPM({ type: 'doc', content: [para('A')] }),
+    })
+    const createSpy = vi.spyOn(docVersionRepo, 'createTx').mockResolvedValue(99)
+    vi.mocked(transaction).mockImplementation(async (fn: never) => {
+      const tx = {
+        query: vi.fn(async (sql: string) => {
+          if (sql.includes('FROM yjs_document')) return []
+          if (sql.includes('FROM doc_meta')) return [{ owner_id: 'u_1', permission_epoch: 7, status: 1 }]
+          if (sql.includes('LAST_INSERT_ID')) return [{ id: 99 }]
+          return []
+        }),
+      }
+      return (fn as unknown as (t: typeof tx) => Promise<unknown>)(tx)
+    })
+
+    const res = mockRes()
+    await restoreVersionHandler(req({ docId: 'd_1', versionId: '5' }), res as never)
+
+    expect(res.statusCode).toBe(200)
+    expect(res.body).toEqual({ restoredFrom: 5, newDocVersionSeq: 99 })
+    expect(applyRestoreToLiveDoc).toHaveBeenCalledTimes(1)
+
+    createSpy.mockRestore()
+    vi.mocked(docVersionRepo.getStateById).mockRestore()
   })
 })
 
@@ -457,6 +562,8 @@ describe('restoreVersion service — safety snapshot (BUG2 rollback)', () => {
     if (!result.ok) expect(result.error).toBe('version_schema_incompatible')
     // The orphan safety row is never inserted ⇒ nothing to leak on rollback.
     expect(createSpy).not.toHaveBeenCalled()
+    // And the live document is never touched on the failure path.
+    expect(applyRestoreToLiveDoc).not.toHaveBeenCalled()
 
     createSpy.mockRestore()
     vi.mocked(docVersionRepo.getStateById).mockRestore()
@@ -492,9 +599,21 @@ describe('restoreVersion service — safety snapshot (BUG2 rollback)', () => {
     })
 
     expect(result.ok).toBe(true)
+    if (result.ok) {
+      // Wire contract: the restore returns the source version + the auto-created
+      // safety snapshot, under the canonical keys.
+      expect(result.restoredFrom).toBe(5)
+      expect(result.newDocVersionSeq).toBe(99)
+    }
     expect(createSpy).toHaveBeenCalledTimes(1)
-    // The restore was actually persisted to the authoritative row.
-    expect(captured.some((q) => q.includes('INSERT INTO yjs_document'))).toBe(true)
+    // The restore is NOT written to yjs_document inside this transaction; the
+    // authoritative content write happens on the live document afterwards.
+    expect(captured.some((q) => q.includes('INSERT INTO yjs_document'))).toBe(false)
+    expect(captured.some((q) => q.includes('UPDATE doc_meta'))).toBe(true)
+    // The live-document apply (broadcast + persist) ran with the target state.
+    expect(applyRestoreToLiveDoc).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(applyRestoreToLiveDoc).mock.calls[0]![0]).toBe(documentName)
+    expect(vi.mocked(applyRestoreToLiveDoc).mock.calls[0]![1]).toBe('u_1')
 
     createSpy.mockRestore()
     vi.mocked(docVersionRepo.getStateById).mockRestore()
