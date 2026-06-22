@@ -98,16 +98,23 @@ export const docMetaRepo = {
     sort: 'updatedAt:desc' | 'updatedAt:asc'
   }): Promise<{ total: number; items: Array<DocMeta & { role: number }> }> {
     const where: string[] = ['m.status <> 0']
-    const args: unknown[] = [params.uid, params.uid]
+    // Optional space/folder filters appear in the WHERE clause between the JOIN's
+    // `dm.uid = ?` and the trailing `m.owner_id = ?`. Collect their bind values in
+    // clause order so the full args array lines up positionally with the SQL.
+    const filterArgs: unknown[] = []
     // role: owner => admin(3), else doc_member.role
     if (params.spaceId) {
       where.push('m.space_id = ?')
-      args.push(params.spaceId)
+      filterArgs.push(params.spaceId)
     }
     if (params.folderId) {
       where.push('m.folder_id = ?')
-      args.push(params.folderId)
+      filterArgs.push(params.folderId)
     }
+    // Placeholders in `base`, in order: JOIN `dm.uid = ?`, then the optional
+    // space/folder filters, then WHERE `m.owner_id = ?`. The join uid leads and
+    // the owner uid trails — they are not interchangeable with the filters.
+    const args: unknown[] = [params.uid, ...filterArgs, params.uid]
     const whereSql = where.join(' AND ')
     const order = params.sort === 'updatedAt:asc' ? 'ASC' : 'DESC'
     // `query()` runs on mysql2 `.execute()` (a prepared statement), which rejects

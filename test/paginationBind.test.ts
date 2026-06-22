@@ -117,3 +117,82 @@ describe('paginated repos inline a validated integer LIMIT/OFFSET (no numeric `?
     expect(params).not.toContain(40)
   })
 })
+
+// Regression for the spaceId/folderId arg-binding misalignment. The `base` clause
+// has positional `?` in this order: JOIN `dm.uid = ?`, optional `m.space_id = ?`,
+// optional `m.folder_id = ?`, then WHERE `m.owner_id = ?`. The old code built args
+// as [uid, uid, spaceId?, folderId?], which bound space_id to the uid and the
+// trailing owner_id to the spaceId — so a spaceId filter matched `owner_id =
+// <spaceId>` and returned zero rows for the owner. These tests assert the args
+// array lines up positionally with the placeholders, which fails on the old order.
+describe('docMetaRepo.listForUser binds space/folder filters positionally', () => {
+  it('count query: args are [joinUid, spaceId, ownerUid] when spaceId is given', async () => {
+    await docMetaRepo.listForUser({
+      uid: 'u_1',
+      spaceId: 's_42',
+      page: 1,
+      pageSize: 10,
+      sort: 'updatedAt:desc',
+    })
+    // The COUNT(*) query is the first of the two query() calls.
+    const countCall = mockQuery.mock.calls[0]!
+    const sql = countCall[0] as string
+    const params = (countCall[1] ?? []) as unknown[]
+    expect(sql).toMatch(/COUNT\(\*\)/)
+    // Placeholder order in `base`: dm.uid, m.space_id, m.owner_id.
+    expect(params).toEqual(['u_1', 's_42', 'u_1'])
+    // The old buggy order would have been ['u_1', 'u_1', 's_42'] — owner_id bound
+    // to the spaceId. Assert that specifically is gone.
+    expect(params).not.toEqual(['u_1', 'u_1', 's_42'])
+  })
+
+  it('items query: args are [caseOwnerUid, joinUid, spaceId, ownerUid] when spaceId is given', async () => {
+    await docMetaRepo.listForUser({
+      uid: 'u_1',
+      spaceId: 's_42',
+      page: 1,
+      pageSize: 10,
+      sort: 'updatedAt:desc',
+    })
+    // The items SELECT is the last query() call. Its placeholder order is:
+    // CASE m.owner_id=?, JOIN dm.uid=?, m.space_id=?, WHERE m.owner_id=?.
+    const { params } = lastCall()
+    expect(params).toEqual(['u_1', 'u_1', 's_42', 'u_1'])
+  })
+
+  it('orders space then folder, with join uid first and owner uid last', async () => {
+    await docMetaRepo.listForUser({
+      uid: 'owner_x',
+      spaceId: 'space_y',
+      folderId: 'folder_z',
+      page: 1,
+      pageSize: 10,
+      sort: 'updatedAt:desc',
+    })
+    const countCall = mockQuery.mock.calls[0]!
+    const params = (countCall[1] ?? []) as unknown[]
+    // JOIN dm.uid, m.space_id, m.folder_id, WHERE m.owner_id.
+    expect(params).toEqual(['owner_x', 'space_y', 'folder_z', 'owner_x'])
+  })
+
+  // Behavioural framing of the same fix: with the misaligned binding, the row's
+  // own space_id was compared against the caller's uid and the owner_id against
+  // the spaceId, so an owner querying their own space matched nothing. Here we
+  // assert the WHERE binds owner_id to the uid (match) and space_id to the
+  // requested space — the only way "owner + correct space" can return the row,
+  // and the only way a wrong space can return empty.
+  it('binds owner_id to the uid and space_id to the requested space (owner+space match)', async () => {
+    await docMetaRepo.listForUser({
+      uid: 'u_owner',
+      spaceId: 's_correct',
+      page: 1,
+      pageSize: 10,
+      sort: 'updatedAt:desc',
+    })
+    const countParams = (mockQuery.mock.calls[0]![1] ?? []) as unknown[]
+    // space_id placeholder (index 1) must carry the space, not the uid…
+    expect(countParams[1]).toBe('s_correct')
+    // …and the trailing owner_id placeholder (last) must carry the uid, not the space.
+    expect(countParams.at(-1)).toBe('u_owner')
+  })
+})

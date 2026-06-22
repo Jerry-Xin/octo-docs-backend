@@ -56,6 +56,28 @@ docsRouter.post('/', async (req: Request, res: Response) => {
   })
 })
 
+/** GET /api/v1/docs/{docId} — fetch one doc's metadata (needs reader). */
+export async function getDocHandler(req: Request, res: Response) {
+  const uid = req.uid!
+  const docId = req.params.docId!
+  const guard = await requireDocRole(res, uid, docId, 'reader')
+  if (!guard) return
+  const { meta, role } = guard
+  res.status(200).json({
+    docId: meta.doc_id,
+    documentName: meta.document_name,
+    title: meta.title,
+    ownerId: meta.owner_id,
+    spaceId: meta.space_id,
+    folderId: meta.folder_id,
+    docType: meta.doc_type,
+    role,
+    createdAt: meta.created_at,
+    updatedAt: meta.updated_at,
+    ...(meta.permission_epoch != null ? { permissionEpoch: meta.permission_epoch } : {}),
+  })
+}
+
 /** GET /api/v1/docs — list docs the caller owns or is a member of. */
 docsRouter.get('/', async (req: Request, res: Response) => {
   const uid = req.uid!
@@ -78,6 +100,10 @@ docsRouter.get('/', async (req: Request, res: Response) => {
     })),
   })
 })
+
+// Registered after GET '/' so the collection route is matched distinctly from
+// the single-doc route (Express treats '/' and '/:docId' as separate paths).
+docsRouter.get('/:docId', getDocHandler)
 
 /** PATCH /api/v1/docs/{docId} — rename (needs admin). */
 docsRouter.patch('/:docId', async (req: Request, res: Response) => {
