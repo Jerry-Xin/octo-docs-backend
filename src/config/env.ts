@@ -77,8 +77,20 @@ export const config = {
     bucket: str('ATTACHMENT_BUCKET', 'octo-docs-attachments'),
     // Object-storage presign driver (§3.5). 'local-hmac' mints real, verifiable
     // HMAC-signed URLs with Node's built-in crypto (no cloud creds/SDK needed);
-    // a real COS/S3 driver can be slotted behind the same ObjectStore interface.
+    // 's3'/'minio' signs real AWS SigV4 presigned URLs against an S3-compatible
+    // endpoint, behind the same ObjectStore interface.
     driver: str('ATTACHMENT_DRIVER', 'local-hmac'),
+    // S3-compatible (MinIO/S3) driver settings. Used only when driver is
+    // 's3'/'minio'. Path-style addressing is always used. The endpoint is the
+    // PUBLIC, browser-reachable origin baked into the signed URL host (never a
+    // docker-internal alias). Credentials come from env — never hardcoded/logged.
+    s3: {
+      endpoint: str('ATTACHMENT_S3_ENDPOINT', 'http://localhost:9000'),
+      region: str('ATTACHMENT_S3_REGION', 'us-east-1'),
+      accessKeyId: str('ATTACHMENT_S3_ACCESS_KEY', ''),
+      secretAccessKey: str('ATTACHMENT_S3_SECRET_KEY', ''),
+      forcePathStyle: true,
+    },
     // Secret keying the HMAC signature over (objectKey + expiry). Dev fallback;
     // MUST be overridden in production (enforced via requireSafeSigningSecret).
     signingSecret: requireSafeSigningSecret(str('ATTACHMENT_SIGNING_SECRET', DEV_SIGNING_SECRET)),

@@ -14,7 +14,7 @@
  * expiry. A real COS/S3 driver can be slotted in behind the same `ObjectStore`
  * interface and selected via `config.attachments.driver`.
  */
-import { createHmac, timingSafeEqual } from 'node:crypto'
+import { createHash, createHmac, timingSafeEqual } from 'node:crypto'
 import { config } from '../config/env.js'
 
 export interface PresignedUpload {
@@ -135,17 +135,164 @@ export class LocalHmacObjectStore implements ObjectStore {
   }
 }
 
-let defaultStore: LocalHmacObjectStore | null = null
+/**
+ * RFC-3986 URI encoding as required by AWS SigV4. `encodeURIComponent` already
+ * leaves the unreserved set (A-Z a-z 0-9 - _ . ~) untouched, but it does NOT
+ * escape `! * ' ( )` — AWS does — so we percent-escape those too. Slashes in a
+ * path are encoded segment-by-segment by the caller so the separators survive.
+ */
+function awsUriEncode(value: string): string {
+  return encodeURIComponent(value).replace(
+    /[!*'()]/g,
+    (c) => '%' + c.charCodeAt(0).toString(16).toUpperCase(),
+  )
+}
+
+function hmac(key: Buffer | string, data: string): Buffer {
+  return createHmac('sha256', key).update(data, 'utf8').digest()
+}
+
+function sha256Hex(data: string): string {
+  return createHash('sha256').update(data, 'utf8').digest('hex')
+}
 
 /**
- * Resolve the configured ObjectStore driver.
+ * Real S3-compatible driver (MinIO, AWS S3, …) that mints AWS Signature V4
+ * presigned query-string URLs using only Node's built-in crypto — no aws-sdk /
+ * minio package. MinIO is fully SigV4 compatible, so a correctly built
+ * presigned URL works against it unchanged.
  *
- * TODO(§3.5): add a 'cos'/'s3' driver (behind this same switch) that signs real
- * COS/S3 PUT/GET URLs once cloud credentials are available. The interface stays
- * identical so callers (the presign/read routes) need no change.
+ * Addressing is path-style (`<endpoint>/<bucket>/<key>`); the host baked into
+ * the signed URL is the configured *public*, browser-reachable endpoint (never
+ * a docker-internal alias), since the front-end issues the PUT/GET directly.
+ * Presigning is pure signing with no network call. `nowSec` is injectable so
+ * tests can assert the embedded `X-Amz-Date` deterministically.
+ */
+export class S3ObjectStore implements ObjectStore {
+  private readonly endpoint: string
+  private readonly region: string
+  private readonly bucket: string
+  private readonly accessKeyId: string
+  private readonly secretAccessKey: string
+  private readonly nowSec: () => number
+  private static readonly SERVICE = 's3'
+
+  constructor(opts: {
+    endpoint: string
+    region: string
+    bucket: string
+    accessKeyId: string
+    secretAccessKey: string
+    nowSec?: () => number
+  }) {
+    // Strip any trailing slash so path joining stays canonical.
+    this.endpoint = opts.endpoint.replace(/\/+$/, '')
+    this.region = opts.region
+    this.bucket = opts.bucket
+    this.accessKeyId = opts.accessKeyId
+    this.secretAccessKey = opts.secretAccessKey
+    this.nowSec = opts.nowSec ?? (() => Math.floor(Date.now() / 1000))
+  }
+
+  /** Path-style canonical URI: /<bucket>/<encoded key segments>. */
+  private canonicalUri(objectKey: string): string {
+    const encodedKey = objectKey.split('/').map(awsUriEncode).join('/')
+    return `/${awsUriEncode(this.bucket)}/${encodedKey}`
+  }
+
+  private presign(method: 'PUT' | 'GET', objectKey: string, expiresSec: number): string {
+    const url = new URL(this.endpoint)
+    // Host header carries the port when non-default; it must match the URL host
+    // exactly or the signature will not verify.
+    const host = url.host
+
+    const now = new Date(this.nowSec() * 1000)
+    const amzDate = now.toISOString().replace(/[:-]|\.\d{3}/g, '') // YYYYMMDDTHHMMSSZ
+    const dateStamp = amzDate.slice(0, 8) // YYYYMMDD
+    const credentialScope = `${dateStamp}/${this.region}/${S3ObjectStore.SERVICE}/aws4_request`
+
+    // X-Amz-* query params that participate in the signature. Content-Type is
+    // intentionally NOT signed (SignedHeaders=host only) so the browser can set
+    // it freely on the PUT.
+    const params: Record<string, string> = {
+      'X-Amz-Algorithm': 'AWS4-HMAC-SHA256',
+      'X-Amz-Credential': `${this.accessKeyId}/${credentialScope}`,
+      'X-Amz-Date': amzDate,
+      'X-Amz-Expires': String(expiresSec),
+      'X-Amz-SignedHeaders': 'host',
+    }
+
+    const canonicalQuery = Object.entries(params)
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+      .map(([k, v]) => `${awsUriEncode(k)}=${awsUriEncode(v)}`)
+      .join('&')
+
+    const canonicalUri = this.canonicalUri(objectKey)
+    const canonicalHeaders = `host:${host}\n`
+    const signedHeaders = 'host'
+    const canonicalRequest = [
+      method,
+      canonicalUri,
+      canonicalQuery,
+      canonicalHeaders,
+      signedHeaders,
+      'UNSIGNED-PAYLOAD',
+    ].join('\n')
+
+    const stringToSign = [
+      'AWS4-HMAC-SHA256',
+      amzDate,
+      credentialScope,
+      sha256Hex(canonicalRequest),
+    ].join('\n')
+
+    const kDate = hmac(`AWS4${this.secretAccessKey}`, dateStamp)
+    const kRegion = hmac(kDate, this.region)
+    const kService = hmac(kRegion, S3ObjectStore.SERVICE)
+    const kSigning = hmac(kService, 'aws4_request')
+    const signature = createHmac('sha256', kSigning).update(stringToSign, 'utf8').digest('hex')
+
+    return `${url.protocol}//${host}${canonicalUri}?${canonicalQuery}&X-Amz-Signature=${signature}`
+  }
+
+  presignPut(objectKey: string, mime: string, expiresSec: number): PresignedUpload {
+    return {
+      uploadUrl: this.presign('PUT', objectKey, expiresSec),
+      // Echoed by the client on the PUT but deliberately left out of the
+      // signed headers (see presign()).
+      headers: { 'Content-Type': mime },
+    }
+  }
+
+  presignGet(objectKey: string, expiresSec: number): string {
+    return this.presign('GET', objectKey, expiresSec)
+  }
+}
+
+let defaultStore: LocalHmacObjectStore | null = null
+let s3Store: S3ObjectStore | null = null
+
+/**
+ * Resolve the configured ObjectStore driver. The interface is identical across
+ * drivers so callers (the presign/read routes) need no change when switching:
+ *   · 'local-hmac' (default) — zero-dependency HMAC-signed URLs for dev;
+ *   · 's3' / 'minio' — real AWS SigV4 presigned URLs against an S3-compatible
+ *     endpoint (the signed URL host is the public, browser-reachable endpoint).
  */
 export function getObjectStore(): ObjectStore {
   switch (config.attachments.driver) {
+    case 's3':
+    case 'minio':
+      if (!s3Store) {
+        s3Store = new S3ObjectStore({
+          endpoint: config.attachments.s3.endpoint,
+          region: config.attachments.s3.region,
+          bucket: config.attachments.bucket,
+          accessKeyId: config.attachments.s3.accessKeyId,
+          secretAccessKey: config.attachments.s3.secretAccessKey,
+        })
+      }
+      return s3Store
     case 'local-hmac':
     default:
       if (!defaultStore) defaultStore = new LocalHmacObjectStore()
