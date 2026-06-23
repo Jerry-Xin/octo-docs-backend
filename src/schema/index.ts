@@ -38,13 +38,18 @@ export const COLLAB_FIELD = 'default'
  * 15=bookmark. The backend does NOT self-assign: it registers the SAME numbers
  * the front-end uses. Numbers are monotonic and never reused — a cut item
  * retires its number (left as a gap). The cumulative additions are:
- *   - v5  textAlign — ATTR on heading/paragraph (no new node/mark).
+ *   - v5  textAlign — ATTR on heading/paragraph (default null; rides inline
+ *         `style="text-align:…"`). No new node/mark.
  *   - v6  `underline` mark.
  *   - v7  fontSize — ATTR on the `textStyle` mark (so textStyle carries BOTH
  *         the v3 `color` and the v7 `fontSize` attr).
  *   - v8  `superscript` + `subscript` marks.
- *   - v9  `emoji` inline atom node (attr `name`).
- *   - v10 `mention` inline node (attrs id/label/type; data-mention-type).
+ *   - v9  `emoji` inline node — attr `name`. NON-atom in the dump (a
+ *         content-less inline leaf): toDOM is span[data-type=emoji][data-name]
+ *         with a literal `:${name}:` text child.
+ *   - v10 `mention` inline atom — attrs id/label/mentionSuggestionChar (default
+ *         "@")/type (default "user"); data-mention-suggestion-char +
+ *         data-mention-type, class `octo-mention`.
  *   - v11 `details` block — `details` > `detailsSummary` + `detailsContent`.
  *   - v12 `callout` block container (attr `variant`; data-variant).
  *   - v13 `inlineMath` + `blockMath` nodes (attr `latex`).
@@ -82,12 +87,17 @@ const cellAttrs = {
   colspan: { default: 1 },
   rowspan: { default: 1 },
   colwidth: { default: null as number[] | null },
+  // v15 byte-align: @tiptap/extension-table adds an `align` attr to cells
+  // (default null). It rides `data-align` (emitted only when non-null) so the
+  // cell alignment survives the Y.Doc <-> ProseMirror round-trip.
+  align: { default: null as string | null },
 }
 
 function getCellAttrs(dom: unknown): {
   colspan: number
   rowspan: number
   colwidth: number[] | null
+  align: string | null
 } {
   // Structural typing: server build has no DOM lib types.
   const el = dom as { getAttribute(name: string): string | null }
@@ -101,6 +111,7 @@ function getCellAttrs(dom: unknown): {
     colspan,
     rowspan: Number(el.getAttribute('rowspan') ?? 1),
     colwidth: widths && widths.length === colspan ? widths : null,
+    align: el.getAttribute('data-align'),
   }
 }
 
@@ -108,11 +119,33 @@ function setCellAttrs(node: { attrs: Record<string, unknown> }): Record<string, 
   const colspan = node.attrs.colspan as number
   const rowspan = node.attrs.rowspan as number
   const colwidth = node.attrs.colwidth as number[] | null
+  const align = node.attrs.align as string | null
   const attrs: Record<string, string> = {}
   if (colspan !== 1) attrs.colspan = String(colspan)
   if (rowspan !== 1) attrs.rowspan = String(rowspan)
   if (colwidth) attrs['data-colwidth'] = colwidth.join(',')
+  if (align != null) attrs['data-align'] = align
   return attrs
+}
+
+/**
+ * Shared `textAlign` attr helpers for `paragraph` / `heading` (SCHEMA-SPEC §5,
+ * @tiptap/extension-text-align). The attr defaults to null; it rides the inline
+ * `style="text-align:…"` (Tiptap's TextAlign rendering) at parse + render, and
+ * — most importantly — survives the Y.Doc <-> ProseMirror round-trip as a node
+ * attr regardless of DOM serialization.
+ */
+function getTextAlignAttrs(dom: unknown): { textAlign: string | null } {
+  const el = dom as {
+    style?: { textAlign?: string }
+    getAttribute(name: string): string | null
+  }
+  return { textAlign: el.style?.textAlign || el.getAttribute('data-text-align') || null }
+}
+
+function setTextAlignAttrs(node: { attrs: Record<string, unknown> }): Record<string, string> {
+  const textAlign = node.attrs.textAlign as string | null
+  return textAlign ? { style: `text-align: ${textAlign}` } : {}
 }
 
 /**
@@ -152,16 +185,20 @@ export function buildSchema(): Schema {
       paragraph: {
         group: 'block',
         content: 'inline*',
-        parseDOM: [{ tag: 'p' }],
-        toDOM: () => ['p', 0],
+        attrs: { textAlign: { default: null } },
+        parseDOM: [{ tag: 'p', getAttrs: getTextAlignAttrs }],
+        toDOM: (node) => ['p', setTextAlignAttrs(node), 0],
       },
       heading: {
         group: 'block',
         content: 'inline*',
-        attrs: { level: { default: 1 } },
+        attrs: { textAlign: { default: null }, level: { default: 1 } },
         defining: true,
-        parseDOM: [1, 2, 3, 4, 5, 6].map((level) => ({ tag: `h${level}`, attrs: { level } })),
-        toDOM: (node) => [`h${node.attrs.level as number}`, 0],
+        parseDOM: [1, 2, 3, 4, 5, 6].map((level) => ({
+          tag: `h${level}`,
+          getAttrs: (dom) => ({ ...getTextAlignAttrs(dom), level }),
+        })),
+        toDOM: (node) => [`h${node.attrs.level as number}`, setTextAlignAttrs(node), 0],
       },
       // Standard StarterKit-style block nodes brought in by the v15 co-land
       // (lists / task list / blockquote / codeBlock / horizontalRule). Each uses
@@ -170,13 +207,13 @@ export function buildSchema(): Schema {
       // and PMNode.fromJSON().check() only care about the node name + attr set;
       // the toDOM/parseDOM mappings keep HTML import/export byte-aligned too.
       bulletList: {
-        group: 'block',
+        group: 'block list',
         content: 'listItem+',
         parseDOM: [{ tag: 'ul' }],
         toDOM: () => ['ul', 0],
       },
       orderedList: {
-        group: 'block',
+        group: 'block list',
         content: 'listItem+',
         attrs: { start: { default: 1 }, type: { default: null } },
         parseDOM: [
@@ -205,7 +242,7 @@ export function buildSchema(): Schema {
         toDOM: () => ['li', 0],
       },
       taskList: {
-        group: 'block',
+        group: 'block list',
         content: 'taskItem+',
         parseDOM: [{ tag: 'ul[data-type="taskList"]' }],
         toDOM: () => ['ul', { 'data-type': 'taskList' }, 0],
@@ -262,6 +299,16 @@ export function buildSchema(): Schema {
         group: 'block',
         parseDOM: [{ tag: 'hr' }],
         toDOM: () => ['hr'],
+      },
+      // hardBreak — inline `<br>` leaf (StarterKit). The JSON dump carries it as
+      // an inline node (group "inline", non-atom) even though it is absent from
+      // schemaNodesConst; include it so a soft line break round-trips.
+      hardBreak: {
+        group: 'inline',
+        inline: true,
+        selectable: false,
+        parseDOM: [{ tag: 'br' }],
+        toDOM: () => ['br'],
       },
       // Block image node (§3.2 / §3.5). The Y.Doc stores only a reference —
       // `attachId` (preferred) or a controlled `src` URL — NEVER base64, so
@@ -327,7 +374,7 @@ export function buildSchema(): Schema {
         toDOM: () => ['table', ['tbody', 0]],
       },
       tableRow: {
-        content: '(tableCell | tableHeader)+',
+        content: '(tableCell | tableHeader)*',
         tableRole: 'row',
         parseDOM: [{ tag: 'tr' }],
         toDOM: () => ['tr', 0],
@@ -348,12 +395,14 @@ export function buildSchema(): Schema {
         parseDOM: [{ tag: 'th', getAttrs: getCellAttrs }],
         toDOM: (node) => ['th', setCellAttrs(node), 0],
       },
-      // v9 emoji — inline atom (@tiptap/extension-emoji). Carries the `name`
-      // (shortcode) attr; data-type="emoji" + data-name round-trip.
+      // v9 emoji — inline leaf (@tiptap/extension-emoji). The dump has it as a
+      // NON-atom inline node (spec.atom is unset; a content-less inline node is
+      // a leaf either way) carrying the `name` (shortcode) attr. toDOM is a
+      // `span[data-type="emoji"][data-name]` with a literal `:${name}:` text
+      // child (the dump's children:[{text:":null:"}]); parse reads data-name.
       emoji: {
         group: 'inline',
         inline: true,
-        atom: true,
         attrs: { name: { default: null } },
         parseDOM: [
           {
@@ -368,16 +417,23 @@ export function buildSchema(): Schema {
           const name = node.attrs.name as string | null
           const attrs: Record<string, string> = { 'data-type': 'emoji' }
           if (name != null) attrs['data-name'] = name
-          return ['span', attrs]
+          return ['span', attrs, `:${name ?? ''}:`]
         },
       },
       // v10 mention — inline atom (@tiptap/extension-mention). attrs id/label/
-      // type; the kind ('user'|'doc') round-trips via data-mention-type.
+      // mentionSuggestionChar (default "@")/type (default "user"). The trigger
+      // char rides data-mention-suggestion-char and the kind ('user'|'doc')
+      // rides data-mention-type; the span carries the `octo-mention` class.
       mention: {
         group: 'inline',
         inline: true,
         atom: true,
-        attrs: { id: { default: null }, label: { default: null }, type: { default: 'user' } },
+        attrs: {
+          id: { default: null },
+          label: { default: null },
+          mentionSuggestionChar: { default: '@' },
+          type: { default: 'user' },
+        },
         parseDOM: [
           {
             tag: 'span[data-type="mention"]',
@@ -386,6 +442,7 @@ export function buildSchema(): Schema {
               return {
                 id: el.getAttribute('data-id'),
                 label: el.getAttribute('data-label'),
+                mentionSuggestionChar: el.getAttribute('data-mention-suggestion-char') || '@',
                 type: el.getAttribute('data-mention-type') || 'user',
               }
             },
@@ -394,11 +451,17 @@ export function buildSchema(): Schema {
         toDOM: (node) => {
           const id = node.attrs.id as string | null
           const label = node.attrs.label as string | null
+          const suggestionChar = (node.attrs.mentionSuggestionChar as string) || '@'
           const type = (node.attrs.type as string) || 'user'
-          const attrs: Record<string, string> = { 'data-type': 'mention', 'data-mention-type': type }
+          const attrs: Record<string, string> = {
+            class: 'octo-mention',
+            'data-type': 'mention',
+            'data-mention-suggestion-char': suggestionChar,
+            'data-mention-type': type,
+          }
           if (id != null) attrs['data-id'] = id
           if (label != null) attrs['data-label'] = label
-          return ['span', attrs, `@${label ?? id ?? ''}`]
+          return ['span', attrs, `${suggestionChar}${label ?? ''}`]
         },
       },
       // v11 details — collapsible block (@tiptap/extension-details): a wrapper
@@ -416,10 +479,14 @@ export function buildSchema(): Schema {
             },
           },
         ],
-        toDOM: (node) => ['details', node.attrs.open ? { open: 'open' } : {}, 0],
+        toDOM: (node) => [
+          'details',
+          node.attrs.open ? { class: 'octo-details', open: 'open' } : { class: 'octo-details' },
+          0,
+        ],
       },
       detailsSummary: {
-        content: 'inline*',
+        content: 'text*',
         defining: true,
         parseDOM: [{ tag: 'summary' }],
         toDOM: () => ['summary', 0],
@@ -609,6 +676,7 @@ export function buildSchema(): Schema {
         toDOM: () => ['s', 0],
       },
       code: {
+        excludes: '_',
         parseDOM: [{ tag: 'code' }],
         toDOM: () => ['code', 0],
       },
@@ -616,10 +684,11 @@ export function buildSchema(): Schema {
         attrs: {
           href: { default: null },
           target: { default: '_blank' },
-          rel: { default: 'noopener noreferrer nofollow' },
+          rel: { default: 'noopener noreferrer' },
           class: { default: null },
+          title: { default: null },
         },
-        inclusive: false,
+        inclusive: true,
         parseDOM: [
           {
             tag: 'a[href]',
@@ -630,6 +699,7 @@ export function buildSchema(): Schema {
                 target: el.getAttribute('target'),
                 rel: el.getAttribute('rel'),
                 class: el.getAttribute('class'),
+                title: el.getAttribute('title'),
               }
             },
           },
@@ -639,11 +709,13 @@ export function buildSchema(): Schema {
           const target = mark.attrs.target as string | null
           const rel = mark.attrs.rel as string | null
           const cls = mark.attrs.class as string | null
+          const title = mark.attrs.title as string | null
           const attrs: Record<string, string> = {}
           if (href != null) attrs.href = href
           if (target != null) attrs.target = target
           if (rel != null) attrs.rel = rel
           if (cls != null) attrs.class = cls
+          if (title != null) attrs.title = title
           return ['a', attrs, 0]
         },
       },

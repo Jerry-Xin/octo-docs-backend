@@ -79,7 +79,7 @@ describe('Schema v4 nodes (SCHEMA-SPEC §4: table/tableRow/tableCell/tableHeader
       'data-colwidth': '120,80',
     } as Record<string, string>
     const parsed = rule.getAttrs!({ getAttribute: (n: string) => attrs[n] ?? null } as never)
-    expect(parsed).toEqual({ colspan: 2, rowspan: 3, colwidth: [120, 80] })
+    expect(parsed).toEqual({ colspan: 2, rowspan: 3, colwidth: [120, 80], align: null })
   })
 
   it('drops data-colwidth whose length does not match colspan (prosemirror-tables guard)', () => {
@@ -87,7 +87,7 @@ describe('Schema v4 nodes (SCHEMA-SPEC §4: table/tableRow/tableCell/tableHeader
     const rule = schema.nodes.tableCell.spec.parseDOM!.find((r) => r.tag === 'td')!
     const attrs = { colspan: '1', 'data-colwidth': '120,80' } as Record<string, string>
     const parsed = rule.getAttrs!({ getAttribute: (n: string) => attrs[n] ?? null } as never)
-    expect(parsed).toEqual({ colspan: 1, rowspan: 1, colwidth: null })
+    expect(parsed).toEqual({ colspan: 1, rowspan: 1, colwidth: null, align: null })
   })
 
   it('builds and validates a table > tableRow > (tableHeader|tableCell) > paragraph document', () => {

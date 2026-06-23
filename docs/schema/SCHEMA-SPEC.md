@@ -20,8 +20,8 @@
 | v6 | `underline` mark | shipped | `src/schema/index.ts`（marks 段） |
 | v7 | `fontSize` ATTR（挂在 `textStyle` mark 上，非新 mark） | shipped | `src/schema/index.ts`（`textStyle` 同时携带 `color` v3 + `fontSize` v7） |
 | v8 | `superscript` + `subscript` marks（一并落地） | shipped | `src/schema/index.ts`（marks 段） |
-| v9 | `emoji` inline atom 节点（attr `name`） | shipped | `src/schema/index.ts`（nodes 段） |
-| v10 | `mention` inline 节点（attrs id / label / type；`data-mention-type` round-trip） | shipped | `src/schema/index.ts`（nodes 段） |
+| v9 | `emoji` inline 节点（attr `name`；**NON-atom**——内容为空的 inline leaf，dump 中 `atom:false`；toDOM 为 `span[data-type=emoji][data-name]` + 字面 `:${name}:` 文本子节点） | shipped | `src/schema/index.ts`（nodes 段） |
+| v10 | `mention` inline atom 节点（attrs id / label / **mentionSuggestionChar**（默认 `"@"`）/ type（默认 `"user"`）；`data-mention-suggestion-char` + `data-mention-type` round-trip，span 带 `octo-mention` class） | shipped | `src/schema/index.ts`（nodes 段） |
 | v11 | 可折叠 `details` 块（`details` > `detailsSummary` + `detailsContent`） | shipped | `src/schema/index.ts`（nodes 段） |
 | v12 | 自建 `callout` 块（attr `variant` info/warn/tip/success；`data-variant` round-trip） | shipped | `src/schema/index.ts`（nodes 段）；前端 `Callout.ts` |
 | v13 | `inlineMath` + `blockMath` 节点（attr `latex`） | shipped | `src/schema/index.ts`（nodes 段） |
@@ -29,6 +29,22 @@
 | v15 | 自建 `bookmark` 块 atom（attrs url/title/description/image/siteName/fetchedAt；data-url/data-title/data-description/data-image/data-site-name/data-fetched-at round-trip） | shipped | `src/schema/index.ts`（nodes 段）；前端 `Bookmark.ts` |
 
 当前 `SCHEMA_VERSION = 15`（`src/schema/index.ts:67`）—— v5–v15 已与前端 `@octo/docs-schema` **原子同落**，后端 `buildSchema()` 现已镜像前端完整 node/mark 集合。
+
+### byte-align 校正（对齐前端 `getSchema()` dump，schemaVersion=15 / tiptap 3.22.2）
+
+后端 `buildSchema()` 早期若干节点按 Tiptap 默认猜测实现，与前端 dump 存在 drift；已按 dump **逐字节对齐**（attr 集合 + 默认值优先，toDOM 次之但一并对齐）：
+
+- **paragraph / heading**：新增 `textAlign` attr（默认 `null`，挂 inline `style="text-align:…"`）——v5 之前后端漏挂。
+- **emoji**：由 `atom:true` 改为 **NON-atom** inline leaf，toDOM 增加 `:${name}:` 文本子节点。
+- **mention**：补 `mentionSuggestionChar` attr（默认 `"@"`，`data-mention-suggestion-char`）+ `octo-mention` class；`type` 默认 `"user"`。
+- **link** mark：`rel` 默认由 `"noopener noreferrer nofollow"` 校正为 **`"noopener noreferrer"`**；补 `title` attr；`inclusive` 由 `false` 改为 **`true`**（dump 为 inclusive）。
+- **code** mark：补 `excludes: "_"`（dump 中 code 排斥所有其他 mark）。
+- **table cell / header**：`cellAttrs` 补 `align` attr（默认 `null`，`data-align` 仅非空时序列化）。
+- **hardBreak**：新增 inline `<br>` leaf 节点（dump 含 hardBreak，原后端缺失）。
+- **lists**：`bulletList` / `orderedList` / `taskList` 的 group 由 `"block"` 校正为 **`"block list"`**；`tableRow` content 由 `+` 校正为 `*`。
+- **details**：toDOM 补 `octo-details` class；`detailsSummary` content 由 `inline*` 校正为 `text*`。
+- **inlineMath / blockMath**：`data-type` 为 `inline-math` / `block-math`，`latex` 默认空串——已对齐。
+
 
 ## PM 冻结发号表（batch 3，已落地）
 

@@ -95,9 +95,9 @@ describe('Schema v15 co-land (full @octo/docs-schema parity)', () => {
               type: 'paragraph',
               content: [
                 { type: 'text', text: 'hi ' },
-                { type: 'mention', attrs: { id: 'u1', label: 'Alice', type: 'user' } },
+                { type: 'mention', attrs: { id: 'u1', label: 'Alice', mentionSuggestionChar: '@', type: 'user' } },
                 { type: 'text', text: ' look at ' },
-                { type: 'mention', attrs: { id: 'doc42', label: 'Spec', type: 'doc' } },
+                { type: 'mention', attrs: { id: 'doc42', label: 'Spec', mentionSuggestionChar: '@', type: 'doc' } },
                 { type: 'text', text: ' ' },
                 { type: 'emoji', attrs: { name: 'rocket' } },
                 { type: 'text', text: ' ' },
@@ -171,7 +171,7 @@ describe('Schema v15 co-land (full @octo/docs-schema parity)', () => {
     expect(back).toEqual(doc)
   })
 
-  it('round-trips a link mark preserving its href (and default target/rel/class)', () => {
+  it('round-trips a link mark preserving its href and all five attrs', () => {
     const doc = {
       type: 'doc',
       content: [
@@ -187,8 +187,9 @@ describe('Schema v15 co-land (full @octo/docs-schema parity)', () => {
                   attrs: {
                     href: 'https://example.com/',
                     target: '_blank',
-                    rel: 'noopener noreferrer nofollow',
+                    rel: 'noopener noreferrer',
                     class: null,
+                    title: null,
                   },
                 },
               ],
@@ -238,6 +239,195 @@ describe('Schema v15 co-land (full @octo/docs-schema parity)', () => {
         },
         { type: 'horizontalRule' },
       ],
+    }
+    const back = yDocStateToProsemirrorJSON(prosemirrorJSONToYDocState(doc))
+    expect(back).toEqual(doc)
+  })
+
+  // (a) emoji is a NON-atom inline node in the front-end dump (a content-less
+  // inline leaf), and round-trips its `name` attr + serializes a `:${name}:`
+  // text child.
+  it('keeps emoji NON-atom and round-trips name + `:name:` text child', () => {
+    const schema = buildSchema()
+    const emojiType = schema.nodes.emoji
+    // The dump has emoji.atom === false (spec.atom must NOT be set to true).
+    expect(emojiType.spec.atom).not.toBe(true)
+    expect(emojiType.isInline).toBe(true)
+
+    // toDOM emits span[data-type=emoji][data-name] + the `:name:` text child.
+    const node = emojiType.create({ name: 'rocket' })
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const dom = emojiType.spec.toDOM!(node as any) as [string, Record<string, string>, string]
+    expect(dom[0]).toBe('span')
+    expect(dom[1]['data-type']).toBe('emoji')
+    expect(dom[1]['data-name']).toBe('rocket')
+    expect(dom[2]).toBe(':rocket:')
+
+    const doc = {
+      type: 'doc',
+      content: [{ type: 'paragraph', content: [{ type: 'emoji', attrs: { name: 'rocket' } }] }],
+    }
+    const back = yDocStateToProsemirrorJSON(prosemirrorJSONToYDocState(doc))
+    expect(back).toEqual(doc)
+  })
+
+  // (b) mention round-trips ALL FOUR attrs, including mentionSuggestionChar — a
+  // non-default trigger char ('#') proves it is truly carried, not just defaulted.
+  it('round-trips all four mention attrs incl a non-default mentionSuggestionChar', () => {
+    const doc = {
+      type: 'doc',
+      content: [
+        {
+          type: 'paragraph',
+          content: [
+            {
+              type: 'mention',
+              attrs: { id: 'doc7', label: 'Roadmap', mentionSuggestionChar: '#', type: 'doc' },
+            },
+          ],
+        },
+      ],
+    }
+    const back = yDocStateToProsemirrorJSON(prosemirrorJSONToYDocState(doc))
+    expect(back).toEqual(doc)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const m = (back as any).content[0].content[0]
+    expect(m.attrs.mentionSuggestionChar).toBe('#')
+    expect(m.attrs.type).toBe('doc')
+  })
+
+  // (c) inlineMath / blockMath round-trip their `latex` attr.
+  it('round-trips inlineMath and blockMath latex', () => {
+    const doc = {
+      type: 'doc',
+      content: [
+        {
+          type: 'paragraph',
+          content: [{ type: 'inlineMath', attrs: { latex: 'e^{i\\pi} + 1 = 0' } }],
+        },
+        { type: 'blockMath', attrs: { latex: '\\sum_{n=1}^{\\infty} \\frac{1}{n^2}' } },
+      ],
+    }
+    const back = yDocStateToProsemirrorJSON(prosemirrorJSONToYDocState(doc))
+    expect(back).toEqual(doc)
+  })
+
+  // (d) details round-trips its `open` attr (true must survive; default false is
+  // null-stripped on the way out — assert via the non-default true case).
+  it('round-trips the details open attr', () => {
+    const doc = {
+      type: 'doc',
+      content: [
+        {
+          type: 'details',
+          attrs: { open: true },
+          content: [
+            { type: 'detailsSummary', content: [{ type: 'text', text: 'Summary' }] },
+            {
+              type: 'detailsContent',
+              content: [{ type: 'paragraph', content: [{ type: 'text', text: 'body' }] }],
+            },
+          ],
+        },
+      ],
+    }
+    const back = yDocStateToProsemirrorJSON(prosemirrorJSONToYDocState(doc))
+    expect(back).toEqual(doc)
+  })
+
+  // (e) link default target/rel/class/title are filled from the schema when a
+  // doc supplies only href, and they round-trip.
+  it('fills and round-trips link default target/rel/class/title from href alone', () => {
+    const doc = {
+      type: 'doc',
+      content: [
+        {
+          type: 'paragraph',
+          content: [
+            { type: 'text', text: 'x', marks: [{ type: 'link', attrs: { href: 'https://a.test/' } }] },
+          ],
+        },
+      ],
+    }
+    const back = yDocStateToProsemirrorJSON(prosemirrorJSONToYDocState(doc))
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const attrs = (back as any).content[0].content[0].marks[0].attrs
+    expect(attrs).toEqual({
+      href: 'https://a.test/',
+      target: '_blank',
+      rel: 'noopener noreferrer',
+      class: null,
+      title: null,
+    })
+  })
+
+  // (f) textStyle carries fontSize (alongside color) and round-trips it.
+  it('round-trips textStyle fontSize', () => {
+    const doc = {
+      type: 'doc',
+      content: [
+        {
+          type: 'paragraph',
+          content: [
+            {
+              type: 'text',
+              text: 'big',
+              marks: [{ type: 'textStyle', attrs: { color: null, fontSize: '32px' } }],
+            },
+          ],
+        },
+      ],
+    }
+    const back = yDocStateToProsemirrorJSON(prosemirrorJSONToYDocState(doc))
+    expect(back).toEqual(doc)
+  })
+
+  // (g) taskItem round-trips its `checked` attr (both true and false).
+  it('round-trips taskItem checked true and false', () => {
+    const doc = {
+      type: 'doc',
+      content: [
+        {
+          type: 'taskList',
+          content: [
+            {
+              type: 'taskItem',
+              attrs: { checked: true },
+              content: [{ type: 'paragraph', content: [{ type: 'text', text: 'a' }] }],
+            },
+            {
+              type: 'taskItem',
+              attrs: { checked: false },
+              content: [{ type: 'paragraph', content: [{ type: 'text', text: 'b' }] }],
+            },
+          ],
+        },
+      ],
+    }
+    const back = yDocStateToProsemirrorJSON(prosemirrorJSONToYDocState(doc))
+    expect(back).toEqual(doc)
+  })
+
+  // (h) heading + paragraph carry textAlign now; a non-null value round-trips
+  // (the null default is stripped from storage, so assert via non-default).
+  it('round-trips heading and paragraph textAlign', () => {
+    const doc = {
+      type: 'doc',
+      content: [
+        { type: 'heading', attrs: { textAlign: 'center', level: 2 }, content: [{ type: 'text', text: 'Title' }] },
+        { type: 'paragraph', attrs: { textAlign: 'right' }, content: [{ type: 'text', text: 'body' }] },
+      ],
+    }
+    const back = yDocStateToProsemirrorJSON(prosemirrorJSONToYDocState(doc))
+    expect(back).toEqual(doc)
+  })
+
+  // The textAlign null default must NOT leak into output (node-attr nulls are
+  // stripped at storage), so a plain paragraph stays attr-free on the way back.
+  it('omits textAlign when it is the null default', () => {
+    const doc = {
+      type: 'doc',
+      content: [{ type: 'paragraph', content: [{ type: 'text', text: 'plain' }] }],
     }
     const back = yDocStateToProsemirrorJSON(prosemirrorJSONToYDocState(doc))
     expect(back).toEqual(doc)
