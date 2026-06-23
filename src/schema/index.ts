@@ -30,43 +30,41 @@ export const COLLAB_FIELD = 'default'
  * carrying the v2 image node + v3 marks forward cumulatively. Bump this
  * whenever the node/mark set changes.
  *
- * TODO(batch3 ⑯/⑰ lockstep): the `fileAttachment` (non-image file attachments)
- * and `bookmark`/`linkCard` (OG link cards) collaboration nodes are planned and
- * WILL bump SCHEMA_VERSION when added. The 发号 (version-number assignment) is
- * now FROZEN by the PM's single authoritative table: `fileAttachment` =
- * SCHEMA_VERSION 14, `bookmark` = SCHEMA_VERSION 15 (the table assigns 5-13 to
- * the front-end items textAlign/underline/fontSize/sup-sub/emoji/mention/details/
- * callout/math first, then 14=fileAttachment, 15=bookmark). The backend does NOT
- * self-assign: it registers the SAME numbers the front-end uses. Numbers are
- * monotonic and never reused — a cut item retires its number (left as a gap).
+ * v5-v15 LANDED (batch3 atomic co-land): the full @octo/docs-schema v15 node/
+ * mark set is now mirrored here. The 发号 (version-number assignment) followed
+ * the PM's single authoritative table — the front-end (Ploy) landed 5-13
+ * (textAlign/underline/fontSize/sup-sub/emoji/mention/details/callout/math) and
+ * the backend (Boris) owns the attr contract for 14=fileAttachment and
+ * 15=bookmark. The backend does NOT self-assign: it registers the SAME numbers
+ * the front-end uses. Numbers are monotonic and never reused — a cut item
+ * retires its number (left as a gap). The cumulative additions are:
+ *   - v5  textAlign — ATTR on heading/paragraph (no new node/mark).
+ *   - v6  `underline` mark.
+ *   - v7  fontSize — ATTR on the `textStyle` mark (so textStyle carries BOTH
+ *         the v3 `color` and the v7 `fontSize` attr).
+ *   - v8  `superscript` + `subscript` marks.
+ *   - v9  `emoji` inline atom node (attr `name`).
+ *   - v10 `mention` inline node (attrs id/label/type; data-mention-type).
+ *   - v11 `details` block — `details` > `detailsSummary` + `detailsContent`.
+ *   - v12 `callout` block container (attr `variant`; data-variant).
+ *   - v13 `inlineMath` + `blockMath` nodes (attr `latex`).
+ *   - v14 `fileAttachment` block atom (attrs attachId/fileName/mime/sizeBytes;
+ *         data-attach-id/data-file-name/data-mime/data-size-bytes) — references
+ *         a `doc_attachment` row (no inline bytes), like the `image` node.
+ *   - v15 `bookmark` block atom (attrs url/title/description/image/siteName/
+ *         fetchedAt; data-url/data-title/data-description/data-image/
+ *         data-site-name/data-fetched-at) — EXACTLY the link-card OG endpoint
+ *         out-params (POST /docs/:docId/link-card).
  *
- * SCHEMA_VERSION stays 4 until these nodes actually land in `buildSchema()`. The
- * final value is the highest LANDED number (not 15 just because 15 is reserved);
- * it is bumped monotonically per the PM landing order (5-13 land first, then
- * 14/15), so the literal below tracks reality, not the reservation table.
- *
- * When 14/15 land they must land in the same lockstep as the frontend
- * `@octo/docs-schema` / SCHEMA-SPEC registration (node + attr byte alignment),
- * or Y.Doc <-> ProseMirror conversion drops content. The backend-side node attr
- * contract `buildSchema()` will add — and that the front-end Tiptap node MUST
- * byte-align to, with no invented aliases — grounded in the batch3 link-card
- * out-param contract, is:
- *   - `fileAttachment` attrs: attachId (string), fileName (string), mime
- *     (string), sizeBytes (number) — references the `doc_attachment` row (no
- *     inline bytes), mirroring how the existing `image` node carries attachId.
- *   - `bookmark` attrs: url, title, description, image, siteName, fetchedAt —
- *     EXACTLY the link-card OG endpoint out-params (POST /docs/:docId/link-card
- *     returns { url, title, description, image, siteName, fetchedAt }); the
- *     front-end must use these field names as attrs verbatim.
- * Both must also register in the SCHEMA-SPEC governance (the §-numbered design
- * contract) in the same lockstep when they land, exactly as v2 `image` / v3
- * marks / v4 table did.
- *
- * The batch3 backend work (attachment presign widening + the link-card OG
- * endpoint) is independent of the schema, so SCHEMA_VERSION is deliberately NOT
- * bumped here and no new nodes are added unilaterally.
+ * 14/15 land in the same lockstep as the frontend `@octo/docs-schema` /
+ * SCHEMA-SPEC registration (node + attr byte alignment): the front-end Tiptap
+ * nodes (FileAttachment.ts / Bookmark.ts) byte-align to these attr/data-*
+ * names with no invented aliases, or Y.Doc <-> ProseMirror conversion drops
+ * content. The standard nodes/marks (lists/tasklist/blockquote/codeBlock/
+ * horizontalRule + the marks above) use their standard Tiptap/StarterKit
+ * ProseMirror DOM serialization, consistent with the image/table nodes here.
  */
-export const SCHEMA_VERSION = 4
+export const SCHEMA_VERSION = 15
 
 /**
  * Shared attrs + DOM mapping for `tableCell` / `tableHeader` (SCHEMA-SPEC §4).
@@ -118,11 +116,34 @@ function setCellAttrs(node: { attrs: Record<string, unknown> }): Record<string, 
 }
 
 /**
+ * Bookmark url / og:image sanitizer (SCHEMA-SPEC §15, byte-aligned to the
+ * front-end `sanitizeBookmarkUrl`): http/https ONLY (no mailto, no pseudo
+ * schemes), no host whitelist (the bookmarked page + its thumbnail are external
+ * by definition). Runs at parse AND render so a `javascript:`/`data:` URL can
+ * never enter the Y.Doc or serialize back out. A relative/protocol-relative URL
+ * resolves against a stable origin so the scheme check is meaningful server-side
+ * (which has no `window.location`).
+ */
+const BOOKMARK_SCHEME_WHITELIST = new Set(['http:', 'https:'])
+
+function sanitizeBookmarkUrl(raw: string | null | undefined): string | null {
+  if (!raw) return null
+  try {
+    const u = new URL(raw, 'https://octo.local')
+    return BOOKMARK_SCHEME_WHITELIST.has(u.protocol) ? u.href : null
+  } catch {
+    return null
+  }
+}
+
+/**
  * Build the ProseMirror schema used for server-side Y.Doc <-> ProseMirror
- * conversion (§7.1). Kept intentionally minimal but structurally compatible
- * with a Tiptap StarterKit-style document (doc/paragraph/heading/image/text +
- * basic marks). Replace with the frozen `@octo/docs-schema` buildSchema() when
- * ready.
+ * conversion (§7.1). Mirrors the frozen `@octo/docs-schema` package at
+ * SCHEMA_VERSION 15 — the FULL Tiptap node/mark set — so any front-end-authored
+ * document round-trips through y-prosemirror and `PMNode.fromJSON(...).check()`
+ * without loss. The standard nodes/marks use their standard Tiptap/StarterKit
+ * ProseMirror DOM serialization; the self-built nodes (image/table/callout/
+ * fileAttachment/bookmark) byte-align to the matching front-end node files.
  */
 export function buildSchema(): Schema {
   return new Schema({
@@ -141,6 +162,106 @@ export function buildSchema(): Schema {
         defining: true,
         parseDOM: [1, 2, 3, 4, 5, 6].map((level) => ({ tag: `h${level}`, attrs: { level } })),
         toDOM: (node) => [`h${node.attrs.level as number}`, 0],
+      },
+      // Standard StarterKit-style block nodes brought in by the v15 co-land
+      // (lists / task list / blockquote / codeBlock / horizontalRule). Each uses
+      // its standard Tiptap ProseMirror DOM serialization, consistent with how
+      // the image/table nodes below are written. The y-prosemirror round-trip
+      // and PMNode.fromJSON().check() only care about the node name + attr set;
+      // the toDOM/parseDOM mappings keep HTML import/export byte-aligned too.
+      bulletList: {
+        group: 'block',
+        content: 'listItem+',
+        parseDOM: [{ tag: 'ul' }],
+        toDOM: () => ['ul', 0],
+      },
+      orderedList: {
+        group: 'block',
+        content: 'listItem+',
+        attrs: { start: { default: 1 }, type: { default: null } },
+        parseDOM: [
+          {
+            tag: 'ol',
+            getAttrs: (dom) => {
+              const el = dom as { getAttribute(name: string): string | null }
+              const start = el.getAttribute('start')
+              return { start: start ? Number(start) : 1, type: el.getAttribute('type') }
+            },
+          },
+        ],
+        toDOM: (node) => {
+          const start = node.attrs.start as number
+          const type = node.attrs.type as string | null
+          const attrs: Record<string, string> = {}
+          if (start != null && start !== 1) attrs.start = String(start)
+          if (type != null) attrs.type = type
+          return ['ol', attrs, 0]
+        },
+      },
+      listItem: {
+        content: 'paragraph block*',
+        defining: true,
+        parseDOM: [{ tag: 'li' }],
+        toDOM: () => ['li', 0],
+      },
+      taskList: {
+        group: 'block',
+        content: 'taskItem+',
+        parseDOM: [{ tag: 'ul[data-type="taskList"]' }],
+        toDOM: () => ['ul', { 'data-type': 'taskList' }, 0],
+      },
+      taskItem: {
+        content: 'paragraph block*',
+        defining: true,
+        attrs: { checked: { default: false } },
+        parseDOM: [
+          {
+            tag: 'li[data-type="taskItem"]',
+            getAttrs: (dom) => {
+              const el = dom as { getAttribute(name: string): string | null }
+              return { checked: el.getAttribute('data-checked') === 'true' }
+            },
+          },
+        ],
+        toDOM: (node) => [
+          'li',
+          { 'data-type': 'taskItem', 'data-checked': node.attrs.checked ? 'true' : 'false' },
+          0,
+        ],
+      },
+      blockquote: {
+        group: 'block',
+        content: 'block+',
+        defining: true,
+        parseDOM: [{ tag: 'blockquote' }],
+        toDOM: () => ['blockquote', 0],
+      },
+      codeBlock: {
+        group: 'block',
+        content: 'text*',
+        marks: '',
+        code: true,
+        defining: true,
+        attrs: { language: { default: null } },
+        parseDOM: [
+          {
+            tag: 'pre',
+            preserveWhitespace: 'full',
+            getAttrs: (dom) => {
+              const el = dom as { getAttribute(name: string): string | null }
+              return { language: el.getAttribute('data-language') }
+            },
+          },
+        ],
+        toDOM: (node) => {
+          const language = node.attrs.language as string | null
+          return ['pre', language ? { 'data-language': language } : {}, ['code', 0]]
+        },
+      },
+      horizontalRule: {
+        group: 'block',
+        parseDOM: [{ tag: 'hr' }],
+        toDOM: () => ['hr'],
       },
       // Block image node (§3.2 / §3.5). The Y.Doc stores only a reference —
       // `attachId` (preferred) or a controlled `src` URL — NEVER base64, so
@@ -227,6 +348,244 @@ export function buildSchema(): Schema {
         parseDOM: [{ tag: 'th', getAttrs: getCellAttrs }],
         toDOM: (node) => ['th', setCellAttrs(node), 0],
       },
+      // v9 emoji — inline atom (@tiptap/extension-emoji). Carries the `name`
+      // (shortcode) attr; data-type="emoji" + data-name round-trip.
+      emoji: {
+        group: 'inline',
+        inline: true,
+        atom: true,
+        attrs: { name: { default: null } },
+        parseDOM: [
+          {
+            tag: 'span[data-type="emoji"]',
+            getAttrs: (dom) => {
+              const el = dom as { getAttribute(name: string): string | null }
+              return { name: el.getAttribute('data-name') }
+            },
+          },
+        ],
+        toDOM: (node) => {
+          const name = node.attrs.name as string | null
+          const attrs: Record<string, string> = { 'data-type': 'emoji' }
+          if (name != null) attrs['data-name'] = name
+          return ['span', attrs]
+        },
+      },
+      // v10 mention — inline atom (@tiptap/extension-mention). attrs id/label/
+      // type; the kind ('user'|'doc') round-trips via data-mention-type.
+      mention: {
+        group: 'inline',
+        inline: true,
+        atom: true,
+        attrs: { id: { default: null }, label: { default: null }, type: { default: 'user' } },
+        parseDOM: [
+          {
+            tag: 'span[data-type="mention"]',
+            getAttrs: (dom) => {
+              const el = dom as { getAttribute(name: string): string | null }
+              return {
+                id: el.getAttribute('data-id'),
+                label: el.getAttribute('data-label'),
+                type: el.getAttribute('data-mention-type') || 'user',
+              }
+            },
+          },
+        ],
+        toDOM: (node) => {
+          const id = node.attrs.id as string | null
+          const label = node.attrs.label as string | null
+          const type = (node.attrs.type as string) || 'user'
+          const attrs: Record<string, string> = { 'data-type': 'mention', 'data-mention-type': type }
+          if (id != null) attrs['data-id'] = id
+          if (label != null) attrs['data-label'] = label
+          return ['span', attrs, `@${label ?? id ?? ''}`]
+        },
+      },
+      // v11 details — collapsible block (@tiptap/extension-details): a wrapper
+      // (`details` > `detailsSummary` + `detailsContent`).
+      details: {
+        group: 'block',
+        content: 'detailsSummary detailsContent',
+        attrs: { open: { default: false } },
+        parseDOM: [
+          {
+            tag: 'details',
+            getAttrs: (dom) => {
+              const el = dom as { hasAttribute(name: string): boolean }
+              return { open: el.hasAttribute('open') }
+            },
+          },
+        ],
+        toDOM: (node) => ['details', node.attrs.open ? { open: 'open' } : {}, 0],
+      },
+      detailsSummary: {
+        content: 'inline*',
+        defining: true,
+        parseDOM: [{ tag: 'summary' }],
+        toDOM: () => ['summary', 0],
+      },
+      detailsContent: {
+        content: 'block+',
+        defining: true,
+        parseDOM: [{ tag: 'div[data-type="detailsContent"]' }],
+        toDOM: () => ['div', { 'data-type': 'detailsContent' }, 0],
+      },
+      // v12 callout — self-built block container (front-end Callout.ts). `variant`
+      // (info/warn/tip/success) round-trips via data-variant.
+      callout: {
+        group: 'block',
+        content: 'block+',
+        defining: true,
+        attrs: { variant: { default: 'info' } },
+        parseDOM: [
+          {
+            tag: 'div[data-callout]',
+            getAttrs: (dom) => {
+              const el = dom as { getAttribute(name: string): string | null }
+              return { variant: el.getAttribute('data-variant') || 'info' }
+            },
+          },
+        ],
+        toDOM: (node) => {
+          const variant = (node.attrs.variant as string) || 'info'
+          return [
+            'div',
+            { 'data-callout': '', 'data-variant': variant, class: `octo-callout octo-callout-${variant}` },
+            0,
+          ]
+        },
+      },
+      // v13 inlineMath / blockMath — KaTeX formula nodes
+      // (@tiptap/extension-mathematics). Each carries a `latex` attr.
+      inlineMath: {
+        group: 'inline',
+        inline: true,
+        atom: true,
+        attrs: { latex: { default: '' } },
+        parseDOM: [
+          {
+            tag: 'span[data-type="inline-math"]',
+            getAttrs: (dom) => {
+              const el = dom as { getAttribute(name: string): string | null }
+              return { latex: el.getAttribute('data-latex') || '' }
+            },
+          },
+        ],
+        toDOM: (node) => [
+          'span',
+          { 'data-type': 'inline-math', 'data-latex': String(node.attrs.latex ?? '') },
+        ],
+      },
+      blockMath: {
+        group: 'block',
+        atom: true,
+        attrs: { latex: { default: '' } },
+        parseDOM: [
+          {
+            tag: 'div[data-type="block-math"]',
+            getAttrs: (dom) => {
+              const el = dom as { getAttribute(name: string): string | null }
+              return { latex: el.getAttribute('data-latex') || '' }
+            },
+          },
+        ],
+        toDOM: (node) => [
+          'div',
+          { 'data-type': 'block-math', 'data-latex': String(node.attrs.latex ?? '') },
+        ],
+      },
+      // v14 fileAttachment — self-built block atom (front-end FileAttachment.ts).
+      // attrs attachId/fileName/mime/sizeBytes; each rides a data-* attribute
+      // emitted ONLY when non-null (mirrors the image node's rule). sizeBytes is
+      // a decimal STRING in the DOM, a number in the attr.
+      fileAttachment: {
+        group: 'block',
+        atom: true,
+        draggable: true,
+        selectable: true,
+        attrs: {
+          attachId: { default: null },
+          fileName: { default: null },
+          mime: { default: null },
+          sizeBytes: { default: null as number | null },
+        },
+        parseDOM: [
+          {
+            tag: 'div[data-file-attachment]',
+            getAttrs: (dom) => {
+              const el = dom as { getAttribute(name: string): string | null }
+              const raw = el.getAttribute('data-size-bytes')
+              const size = raw == null || raw === '' ? null : Number(raw)
+              return {
+                attachId: el.getAttribute('data-attach-id'),
+                fileName: el.getAttribute('data-file-name'),
+                mime: el.getAttribute('data-mime'),
+                sizeBytes: size != null && Number.isFinite(size) ? size : null,
+              }
+            },
+          },
+        ],
+        toDOM: (node) => {
+          const { attachId, fileName, mime, sizeBytes } = node.attrs
+          const attrs: Record<string, string> = {
+            'data-file-attachment': '',
+            class: 'octo-file-attachment',
+          }
+          if (attachId != null) attrs['data-attach-id'] = String(attachId)
+          if (fileName != null) attrs['data-file-name'] = String(fileName)
+          if (mime != null) attrs['data-mime'] = String(mime)
+          if (sizeBytes != null) attrs['data-size-bytes'] = String(sizeBytes)
+          return ['div', attrs]
+        },
+      },
+      // v15 bookmark — self-built block atom (front-end Bookmark.ts). attrs
+      // url/title/description/image/siteName/fetchedAt; each rides a data-*
+      // attribute emitted ONLY when non-null. url/image are http/https-sanitized
+      // at BOTH parse and render so a javascript:/data: URL can never enter or
+      // leave the Y.Doc. The attr set is EXACTLY the link-card OG out-params.
+      bookmark: {
+        group: 'block',
+        atom: true,
+        draggable: true,
+        selectable: true,
+        attrs: {
+          url: { default: null },
+          title: { default: null },
+          description: { default: null },
+          image: { default: null },
+          siteName: { default: null },
+          fetchedAt: { default: null },
+        },
+        parseDOM: [
+          {
+            tag: 'div[data-bookmark]',
+            getAttrs: (dom) => {
+              const el = dom as { getAttribute(name: string): string | null }
+              return {
+                url: sanitizeBookmarkUrl(el.getAttribute('data-url')),
+                title: el.getAttribute('data-title'),
+                description: el.getAttribute('data-description'),
+                image: sanitizeBookmarkUrl(el.getAttribute('data-image')),
+                siteName: el.getAttribute('data-site-name'),
+                fetchedAt: el.getAttribute('data-fetched-at'),
+              }
+            },
+          },
+        ],
+        toDOM: (node) => {
+          const { url, title, description, image, siteName, fetchedAt } = node.attrs
+          const attrs: Record<string, string> = { 'data-bookmark': '', class: 'octo-bookmark' }
+          const safeUrl = sanitizeBookmarkUrl(url as string | null)
+          const safeImage = sanitizeBookmarkUrl(image as string | null)
+          if (safeUrl != null) attrs['data-url'] = safeUrl
+          if (title != null) attrs['data-title'] = String(title)
+          if (description != null) attrs['data-description'] = String(description)
+          if (safeImage != null) attrs['data-image'] = safeImage
+          if (siteName != null) attrs['data-site-name'] = String(siteName)
+          if (fetchedAt != null) attrs['data-fetched-at'] = String(fetchedAt)
+          return ['div', attrs]
+        },
+      },
       text: { group: 'inline' },
     },
     marks: {
@@ -237,6 +596,56 @@ export function buildSchema(): Schema {
       italic: {
         parseDOM: [{ tag: 'em' }, { tag: 'i' }],
         toDOM: () => ['em', 0],
+      },
+      // v1 standard marks brought in by the v15 co-land (strike/code/link), with
+      // their standard Tiptap ProseMirror DOM serialization.
+      strike: {
+        parseDOM: [
+          { tag: 's' },
+          { tag: 'del' },
+          { tag: 'strike' },
+          { style: 'text-decoration', getAttrs: (v) => ((v as string) === 'line-through' ? null : false) },
+        ],
+        toDOM: () => ['s', 0],
+      },
+      code: {
+        parseDOM: [{ tag: 'code' }],
+        toDOM: () => ['code', 0],
+      },
+      link: {
+        attrs: {
+          href: { default: null },
+          target: { default: '_blank' },
+          rel: { default: 'noopener noreferrer nofollow' },
+          class: { default: null },
+        },
+        inclusive: false,
+        parseDOM: [
+          {
+            tag: 'a[href]',
+            getAttrs: (dom) => {
+              const el = dom as { getAttribute(name: string): string | null }
+              return {
+                href: el.getAttribute('href'),
+                target: el.getAttribute('target'),
+                rel: el.getAttribute('rel'),
+                class: el.getAttribute('class'),
+              }
+            },
+          },
+        ],
+        toDOM: (mark) => {
+          const href = mark.attrs.href as string | null
+          const target = mark.attrs.target as string | null
+          const rel = mark.attrs.rel as string | null
+          const cls = mark.attrs.class as string | null
+          const attrs: Record<string, string> = {}
+          if (href != null) attrs.href = href
+          if (target != null) attrs.target = target
+          if (rel != null) attrs.rel = rel
+          if (cls != null) attrs.class = cls
+          return ['a', attrs, 0]
+        },
       },
       // v3 marks (SCHEMA-SPEC §3, P1a): `highlight` + `textStyle`. Their
       // toDOM/parseDOM are byte-aligned to the frontend Tiptap output
@@ -268,24 +677,53 @@ export function buildSchema(): Schema {
         },
       },
       textStyle: {
-        attrs: { color: { default: null } },
+        // v3 `color` + v7 `fontSize` ride on the same `textStyle` mark
+        // (@tiptap/extension-text-style + FontSize) -> <span style="color:…; font-size:…">.
+        attrs: { color: { default: null }, fontSize: { default: null } },
         parseDOM: [
           {
             tag: 'span',
             getAttrs: (dom) => {
-              const el = dom as { style?: { color?: string } }
-              const color = el.style?.color
-              // A plain `<span>` with no color must NOT match, or this mark
-              // would swallow every span on parse.
-              if (!color) return false
-              return { color }
+              const el = dom as { style?: { color?: string; fontSize?: string } }
+              const color = el.style?.color || null
+              const fontSize = el.style?.fontSize || null
+              // A plain `<span>` with neither color nor font-size must NOT match,
+              // or this mark would swallow every span on parse.
+              if (!color && !fontSize) return false
+              return { color, fontSize }
             },
           },
         ],
         toDOM: (mark) => {
           const color = mark.attrs.color as string | null
-          return ['span', color ? { style: `color: ${color}` } : {}, 0]
+          const fontSize = mark.attrs.fontSize as string | null
+          const styles: string[] = []
+          if (color) styles.push(`color: ${color}`)
+          if (fontSize) styles.push(`font-size: ${fontSize}`)
+          return ['span', styles.length ? { style: styles.join('; ') } : {}, 0]
         },
+      },
+      // v6 underline + v8 superscript/subscript marks, standard Tiptap DOM.
+      underline: {
+        parseDOM: [
+          { tag: 'u' },
+          { style: 'text-decoration', getAttrs: (v) => ((v as string) === 'underline' ? null : false) },
+        ],
+        toDOM: () => ['u', 0],
+      },
+      superscript: {
+        parseDOM: [
+          { tag: 'sup' },
+          { style: 'vertical-align', getAttrs: (v) => ((v as string) === 'super' ? null : false) },
+        ],
+        toDOM: () => ['sup', 0],
+      },
+      subscript: {
+        parseDOM: [
+          { tag: 'sub' },
+          { style: 'vertical-align', getAttrs: (v) => ((v as string) === 'sub' ? null : false) },
+        ],
+        toDOM: () => ['sub', 0],
       },
     },
   })

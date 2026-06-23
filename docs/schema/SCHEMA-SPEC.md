@@ -2,9 +2,9 @@
 
 ## 目的与锁步原则
 
-- 本文是协同 schema 的 `SCHEMA_VERSION` 发号**权威登记表**，与前端 `@octo/docs-schema`（Tiptap 配置）保持锁步。服务端 schema（`src/schema/index.ts` 的 `buildSchema()`）与前端的 node/mark 集合**必须在同一 version 下定义同一套类型**，否则 Y.Doc ↔ ProseMirror 转换会丢失或损坏内容。`SCHEMA_VERSION` 常量见 `src/schema/index.ts:69`；锁步要求见该文件头注释 `src/schema/index.ts:20-31`。
-- **单调递增、不跳号**；砍掉的号**作废留空、不回收**（留作 gap）。落地时按 PM 发号顺序**逐项 bump**；最终 `SCHEMA_VERSION` = **实际合入的最高号**（不是因为 15 被预留就等于 15），见 `src/schema/index.ts:43-46`。
-- 后端**不自行发号**：登记的号与前端使用的号完全一致（`src/schema/index.ts:39-41`）。
+- 本文是协同 schema 的 `SCHEMA_VERSION` 发号**权威登记表**，与前端 `@octo/docs-schema`（Tiptap 配置）保持锁步。服务端 schema（`src/schema/index.ts` 的 `buildSchema()`）与前端的 node/mark 集合**必须在同一 version 下定义同一套类型**，否则 Y.Doc ↔ ProseMirror 转换会丢失或损坏内容。`SCHEMA_VERSION` 常量见 `src/schema/index.ts:67`；锁步要求见该文件头注释。
+- **单调递增、不跳号**；砍掉的号**作废留空、不回收**（留作 gap）。落地时按 PM 发号顺序**逐项 bump**；最终 `SCHEMA_VERSION` = **实际合入的最高号**，见 `src/schema/index.ts` 文件头注释。
+- 后端**不自行发号**：登记的号与前端使用的号完全一致。
 
 ## 已注册版本历史（已合入，真实代码）
 
@@ -15,29 +15,40 @@
 | v1 | 基础 schema：`doc` / `paragraph` / `heading` / `text` 节点 + `bold` / `italic` marks | shipped | `src/schema/index.ts:130-144`、`233-239` |
 | v2 | `image` 节点（仅存引用 `attachId` / 受控 `src`，绝不内联 base64） | shipped | `src/schema/index.ts:150-192`；version 缘由 `src/schema/index.ts:24-26` |
 | v3 | `highlight` + `textStyle` marks | shipped | `src/schema/index.ts:248-289`；缘由 `src/schema/index.ts:27-28` |
-| v4 | 四个表格节点 `table` / `tableRow` / `tableCell` / `tableHeader`（byte-aligned 到 prosemirror-tables / `@tiptap/extension-table` 2.27.2） | shipped | `src/schema/index.ts:200-229`；缘由 `src/schema/index.ts:28-30` |
+| v4 | 四个表格节点 `table` / `tableRow` / `tableCell` / `tableHeader`（byte-aligned 到 prosemirror-tables / `@tiptap/extension-table` 2.27.2） | shipped | `src/schema/index.ts`；缘由见文件头注释 |
+| v5 | `textAlign` ATTR（heading / paragraph，非新 node/mark） | shipped | 前端 Tiptap `@tiptap/extension-text-align`；后端 attr 透传 |
+| v6 | `underline` mark | shipped | `src/schema/index.ts`（marks 段） |
+| v7 | `fontSize` ATTR（挂在 `textStyle` mark 上，非新 mark） | shipped | `src/schema/index.ts`（`textStyle` 同时携带 `color` v3 + `fontSize` v7） |
+| v8 | `superscript` + `subscript` marks（一并落地） | shipped | `src/schema/index.ts`（marks 段） |
+| v9 | `emoji` inline atom 节点（attr `name`） | shipped | `src/schema/index.ts`（nodes 段） |
+| v10 | `mention` inline 节点（attrs id / label / type；`data-mention-type` round-trip） | shipped | `src/schema/index.ts`（nodes 段） |
+| v11 | 可折叠 `details` 块（`details` > `detailsSummary` + `detailsContent`） | shipped | `src/schema/index.ts`（nodes 段） |
+| v12 | 自建 `callout` 块（attr `variant` info/warn/tip/success；`data-variant` round-trip） | shipped | `src/schema/index.ts`（nodes 段）；前端 `Callout.ts` |
+| v13 | `inlineMath` + `blockMath` 节点（attr `latex`） | shipped | `src/schema/index.ts`（nodes 段） |
+| v14 | 自建 `fileAttachment` 块 atom（attrs attachId/fileName/mime/sizeBytes；data-attach-id/data-file-name/data-mime/data-size-bytes round-trip） | shipped | `src/schema/index.ts`（nodes 段）；前端 `FileAttachment.ts` |
+| v15 | 自建 `bookmark` 块 atom（attrs url/title/description/image/siteName/fetchedAt；data-url/data-title/data-description/data-image/data-site-name/data-fetched-at round-trip） | shipped | `src/schema/index.ts`（nodes 段）；前端 `Bookmark.ts` |
 
-当前 `SCHEMA_VERSION = 4`（`src/schema/index.ts:69`）。
+当前 `SCHEMA_VERSION = 15`（`src/schema/index.ts:67`）—— v5–v15 已与前端 `@octo/docs-schema` **原子同落**，后端 `buildSchema()` 现已镜像前端完整 node/mark 集合。
 
-## PM 冻结发号表（batch 3，reserved）
+## PM 冻结发号表（batch 3，已落地）
 
-PM 的单一权威发号表冻结如下。5–13 由前端（Ploy）先行落地，14 / 15 为后端（Boris）拥有的 node-attr 契约。
+PM 的单一权威发号表如下。5–13 由前端（Ploy）落地，14 / 15 为后端（Boris）拥有的 node-attr 契约。**全部已合入**（v15 原子同落）。
 
 | 号 | 项 | 新增 schema 类型 | 归属 | 状态 |
 | --- | --- | --- | --- | --- |
-| 5 | textAlign | mark/attr（前端 Tiptap） | 前端 Ploy | reserved，未落地 |
-| 6 | underline | mark | 前端 Ploy | reserved，未落地 |
-| 7 | fontSize | mark/attr | 前端 Ploy | reserved，未落地 |
-| 8 | superscript + subscript | marks | 前端 Ploy | reserved，未落地 |
-| 9 | emoji | node | 前端 Ploy | reserved，未落地 |
-| 10 | mention | node | 前端 Ploy | reserved，未落地 |
-| 11 | details（`detailsList` / `detailsSummary` / `detailsContent`） | nodes | 前端 Ploy | reserved，未落地 |
-| 12 | callout | node | 前端 Ploy | reserved，未落地 |
-| 13 | math（KaTeX） | node | 前端 Ploy | reserved，未落地 |
-| 14 | **fileAttachment** | **node（后端拥有 attr 契约）** | **后端 Boris** | reserved，未落地 |
-| 15 | **bookmark** | **node（后端拥有 attr 契约）** | **后端 Boris** | reserved，未落地 |
+| 5 | textAlign | mark/attr（前端 Tiptap） | 前端 Ploy | landed |
+| 6 | underline | mark | 前端 Ploy | landed |
+| 7 | fontSize | mark/attr | 前端 Ploy | landed |
+| 8 | superscript + subscript | marks | 前端 Ploy | landed |
+| 9 | emoji | node | 前端 Ploy | landed |
+| 10 | mention | node | 前端 Ploy | landed |
+| 11 | details（`details` / `detailsSummary` / `detailsContent`） | nodes | 前端 Ploy | landed |
+| 12 | callout | node | 前端 Ploy | landed |
+| 13 | math（KaTeX） | node | 前端 Ploy | landed |
+| 14 | **fileAttachment** | **node（后端拥有 attr 契约）** | **后端 Boris** | landed |
+| 15 | **bookmark** | **node（后端拥有 attr 契约）** | **后端 Boris** | landed |
 
-发号冻结依据见 `src/schema/index.ts:33-41`。
+发号冻结依据见 `src/schema/index.ts` 文件头注释。
 
 ## 后端拥有的节点契约（14 / 15）
 
@@ -58,10 +69,11 @@ PM 的单一权威发号表冻结如下。5–13 由前端（Ploy）先行落地
 
 ## 当前状态与落地协议
 
-- `SCHEMA_VERSION` **当前 = 4**（未 bump，`src/schema/index.ts:69`）。14 / 15 已登记 / reserved，但**暂不 bump**：必须与前端 `fileAttachment` / `bookmark` 节点**原子同落**（前后端在同一时刻都到达对应号），避免一端先 bump 造成的版本错配窗口（`src/schema/index.ts:43-67`）。
-- batch3 后端工作（附件 presign 白名单放开 + link-card OG 接口）与 schema **解耦**，已先行实现、**不依赖 bump**：link-card 路由见 `src/api/routes/linkCard.ts`，安全出站抓取见 `src/util/ogFetch.ts`（SSRF 防护见 `src/util/ssrfGuard.ts`）。解耦说明见 `src/schema/index.ts:65-67`。
-- **bump 发生时**的同步动作：
-  1. `buildSchema()` 累加对应新节点（attr 契约如上）；
-  2. `SCHEMA_VERSION++`（按 PM 发号顺序单调递增，5–13 先落、再 14 / 15）；
-  3. 本表对应行状态从 `reserved` 改为 `shipped`，并补「已注册版本历史」表；
+- `SCHEMA_VERSION` **当前 = 15**（`src/schema/index.ts:67`）。v5–v15 已与前端 `@octo/docs-schema` **原子同落**：前后端在同一时刻都到达 15，`buildSchema()` 现已定义完整 node/mark 集合（lists/taskList/blockquote/codeBlock/horizontalRule + emoji/mention/details/callout/inlineMath/blockMath + fileAttachment/bookmark，marks 含 underline/superscript/subscript，`textStyle` 携带 color+fontSize），与前端 Tiptap 配置 byte 对齐。
+- 14 / 15 的 attr 契约（后端拥有）见上「后端拥有的节点契约」；前端 `FileAttachment.ts` / `Bookmark.ts` / `Callout.ts` 已逐字 byte-align。
+- batch3 后端工作（附件 presign 白名单放开 + link-card OG 接口）与 schema 解耦、先行实现：link-card 路由见 `src/api/routes/linkCard.ts`，安全出站抓取见 `src/util/ogFetch.ts`（SSRF 防护见 `src/util/ssrfGuard.ts`）。
+- 后续 bump（v16+）时的同步动作：
+  1. `buildSchema()` 累加对应新节点（attr 契约 byte 对齐）；
+  2. `SCHEMA_VERSION++`（单调递增、不跳号、不回收）；
+  3. 本表对应行状态补「已注册版本历史」表；
   4. 前端 `@octo/docs-schema` 同步注册，node / attr **byte 对齐**。
