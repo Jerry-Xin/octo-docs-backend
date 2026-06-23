@@ -32,12 +32,39 @@ export const COLLAB_FIELD = 'default'
  *
  * TODO(batch3 ⑯/⑰ lockstep): the `fileAttachment` (non-image file attachments)
  * and `bookmark`/`linkCard` (OG link cards) collaboration nodes are planned and
- * WILL bump SCHEMA_VERSION when added — but the version number is PM-assigned
- * and must land in the same lockstep as the frontend `@octo/docs-schema` /
- * SCHEMA-SPEC registration (node + attr byte alignment), or Y.Doc <-> ProseMirror
- * conversion drops content. The batch3 backend work (attachment presign widening
- * + the link-card OG endpoint) is independent of the schema, so SCHEMA_VERSION is
- * deliberately NOT bumped here and no new nodes are added unilaterally.
+ * WILL bump SCHEMA_VERSION when added. The 发号 (version-number assignment) is
+ * now FROZEN by the PM's single authoritative table: `fileAttachment` =
+ * SCHEMA_VERSION 14, `bookmark` = SCHEMA_VERSION 15 (the table assigns 5-13 to
+ * the front-end items textAlign/underline/fontSize/sup-sub/emoji/mention/details/
+ * callout/math first, then 14=fileAttachment, 15=bookmark). The backend does NOT
+ * self-assign: it registers the SAME numbers the front-end uses. Numbers are
+ * monotonic and never reused — a cut item retires its number (left as a gap).
+ *
+ * SCHEMA_VERSION stays 4 until these nodes actually land in `buildSchema()`. The
+ * final value is the highest LANDED number (not 15 just because 15 is reserved);
+ * it is bumped monotonically per the PM landing order (5-13 land first, then
+ * 14/15), so the literal below tracks reality, not the reservation table.
+ *
+ * When 14/15 land they must land in the same lockstep as the frontend
+ * `@octo/docs-schema` / SCHEMA-SPEC registration (node + attr byte alignment),
+ * or Y.Doc <-> ProseMirror conversion drops content. The backend-side node attr
+ * contract `buildSchema()` will add — and that the front-end Tiptap node MUST
+ * byte-align to, with no invented aliases — grounded in the batch3 link-card
+ * out-param contract, is:
+ *   - `fileAttachment` attrs: attachId (string), fileName (string), mime
+ *     (string), sizeBytes (number) — references the `doc_attachment` row (no
+ *     inline bytes), mirroring how the existing `image` node carries attachId.
+ *   - `bookmark` attrs: url, title, description, image, siteName, fetchedAt —
+ *     EXACTLY the link-card OG endpoint out-params (POST /docs/:docId/link-card
+ *     returns { url, title, description, image, siteName, fetchedAt }); the
+ *     front-end must use these field names as attrs verbatim.
+ * Both must also register in the SCHEMA-SPEC governance (the §-numbered design
+ * contract) in the same lockstep when they land, exactly as v2 `image` / v3
+ * marks / v4 table did.
+ *
+ * The batch3 backend work (attachment presign widening + the link-card OG
+ * endpoint) is independent of the schema, so SCHEMA_VERSION is deliberately NOT
+ * bumped here and no new nodes are added unilaterally.
  */
 export const SCHEMA_VERSION = 4
 
