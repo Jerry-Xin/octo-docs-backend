@@ -29,6 +29,15 @@ export const COLLAB_FIELD = 'default'
  * table nodes (`table`/`tableRow`/`tableCell`/`tableHeader`, SCHEMA-SPEC §4),
  * carrying the v2 image node + v3 marks forward cumulatively. Bump this
  * whenever the node/mark set changes.
+ *
+ * TODO(batch3 ⑯/⑰ lockstep): the `fileAttachment` (non-image file attachments)
+ * and `bookmark`/`linkCard` (OG link cards) collaboration nodes are planned and
+ * WILL bump SCHEMA_VERSION when added — but the version number is PM-assigned
+ * and must land in the same lockstep as the frontend `@octo/docs-schema` /
+ * SCHEMA-SPEC registration (node + attr byte alignment), or Y.Doc <-> ProseMirror
+ * conversion drops content. The batch3 backend work (attachment presign widening
+ * + the link-card OG endpoint) is independent of the schema, so SCHEMA_VERSION is
+ * deliberately NOT bumped here and no new nodes are added unilaterally.
  */
 export const SCHEMA_VERSION = 4
 
