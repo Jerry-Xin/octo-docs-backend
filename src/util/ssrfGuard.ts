@@ -151,11 +151,25 @@ export function isBlockedIp(ip: string): boolean {
 export async function resolveAndValidate(
   hostname: string,
 ): Promise<{ hostname: string; validatedIps: string[] }> {
-  const host = hostname.trim().toLowerCase()
+  // An IPv6 literal taken from `URL.hostname` arrives bracketed (e.g. `[::1]`);
+  // strip a single surrounding pair before any processing.
+  const debracketed = hostname.replace(/^\[(.*)\]$/, '$1')
+  const host = debracketed.trim().toLowerCase()
   // Block the loopback alias by name up front (it would resolve to 127.0.0.1 /
   // ::1 anyway, but this is explicit and cheap).
   if (host === '' || host === 'localhost') {
     throw new LinkCardError('ssrf_blocked', `blocked host: ${hostname}`)
+  }
+
+  // An IP literal needs no resolution: validate it DIRECTLY against the
+  // blocklist and SKIP DNS. This makes the guard ACTIVELY block IP literals
+  // (incl. bracketed IPv6 and IPv4-mapped) rather than relying on a DNS lookup
+  // failing by accident.
+  if (isIP(host) !== 0) {
+    if (isBlockedIp(host)) {
+      throw new LinkCardError('ssrf_blocked', `blocked address ${host}`)
+    }
+    return { hostname: host, validatedIps: [host] }
   }
 
   let results: Array<{ address: string }>

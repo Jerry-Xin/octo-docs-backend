@@ -91,3 +91,40 @@ describe('resolveAndValidate — single resolution + post-resolution validation'
     await expect(resolveAndValidate('x.test')).rejects.toBeInstanceOf(LinkCardError)
   })
 })
+
+describe('resolveAndValidate — IP literals are validated directly (no DNS)', () => {
+  it('blocks a bracketed IPv6 loopback literal without resolving', async () => {
+    await expect(resolveAndValidate('[::1]')).rejects.toMatchObject({ code: 'ssrf_blocked' })
+    expect(vi.mocked(lookup)).not.toHaveBeenCalled()
+  })
+
+  it('blocks bracketed IPv4-mapped IPv6 literals without resolving', async () => {
+    await expect(resolveAndValidate('[::ffff:127.0.0.1]')).rejects.toMatchObject({
+      code: 'ssrf_blocked',
+    })
+    await expect(resolveAndValidate('[::ffff:10.0.0.1]')).rejects.toMatchObject({
+      code: 'ssrf_blocked',
+    })
+    expect(vi.mocked(lookup)).not.toHaveBeenCalled()
+  })
+
+  it('blocks a bare IPv4 literal directly (no DNS)', async () => {
+    await expect(resolveAndValidate('127.0.0.1')).rejects.toMatchObject({ code: 'ssrf_blocked' })
+    expect(vi.mocked(lookup)).not.toHaveBeenCalled()
+  })
+
+  it('returns a public bracketed IPv6 literal without resolving', async () => {
+    const out = await resolveAndValidate('[2606:2800:220:1:248:1893:25c8:1946]')
+    expect(out).toEqual({
+      hostname: '2606:2800:220:1:248:1893:25c8:1946',
+      validatedIps: ['2606:2800:220:1:248:1893:25c8:1946'],
+    })
+    expect(vi.mocked(lookup)).not.toHaveBeenCalled()
+  })
+
+  it('returns a public IPv4 literal without resolving', async () => {
+    const out = await resolveAndValidate('93.184.216.34')
+    expect(out).toEqual({ hostname: '93.184.216.34', validatedIps: ['93.184.216.34'] })
+    expect(vi.mocked(lookup)).not.toHaveBeenCalled()
+  })
+})

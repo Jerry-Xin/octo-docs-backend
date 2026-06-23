@@ -7,8 +7,9 @@ import {
   httpTransport,
   type OgFetchDeps,
   type HopResponse,
+  type Transport,
 } from '../src/util/ogFetch.js'
-import { LinkCardError } from '../src/util/ssrfGuard.js'
+import { LinkCardError, resolveAndValidate } from '../src/util/ssrfGuard.js'
 
 // ── pure HTML parsing ─────────────────────────────────────────────────────────
 
@@ -135,6 +136,27 @@ describe('fetchOgCard orchestration (§3.5 ⑰ SSRF / redirects)', () => {
     await expect(fetchOgCard('https://start.example/', deps)).rejects.toMatchObject({
       code: 'fetch_failed',
     })
+  })
+
+  // Exercises the real URL->hostname extraction path: `new URL('http://[::1]/')`
+  // yields a BRACKETED hostname, which the guard must de-bracket and block as an
+  // IP literal (not let it slip through to a DNS failure / fetch_failed).
+  it('blocks an IPv6-literal URL via the real guard (ssrf_blocked, not fetch_failed)', async () => {
+    const transport = vi.fn<Transport>(async () => okHtml)
+    const deps: OgFetchDeps = { resolve: resolveAndValidate, transport }
+    await expect(fetchOgCard('http://[::1]/', deps)).rejects.toMatchObject({
+      code: 'ssrf_blocked',
+    })
+    expect(transport).not.toHaveBeenCalled()
+  })
+
+  it('blocks an IPv4-mapped IPv6-literal URL via the real guard', async () => {
+    const transport = vi.fn<Transport>(async () => okHtml)
+    const deps: OgFetchDeps = { resolve: resolveAndValidate, transport }
+    await expect(fetchOgCard('http://[::ffff:127.0.0.1]/', deps)).rejects.toMatchObject({
+      code: 'ssrf_blocked',
+    })
+    expect(transport).not.toHaveBeenCalled()
   })
 })
 
