@@ -71,6 +71,10 @@ export const config = {
   octoIdentity: {
     mode: str('OCTO_IDENTITY_MODE', 'http') as OctoIdentityMode,
     serverBaseUrl: str('OCTO_SERVER_BASE_URL', 'http://127.0.0.1:8080'),
+    // Optional service token sent as the `token` header on octo-server lookups
+    // (e.g. GET /v1/users/:uid, which requires auth). Empty = not configured;
+    // callers then fall back to the authenticated user's own session token.
+    serviceToken: str('OCTO_SERVER_TOKEN', ''),
   },
 
   attachments: {
