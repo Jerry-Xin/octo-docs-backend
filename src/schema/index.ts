@@ -469,6 +469,7 @@ export function buildSchema(): Schema {
       details: {
         group: 'block',
         content: 'detailsSummary detailsContent',
+        defining: true,
         attrs: { open: { default: false } },
         parseDOM: [
           {
