@@ -87,10 +87,31 @@ export interface CreateVersionInput {
   createdBy: string
 }
 
+/** Filter dimension for listByDoc (maps to a kind SQL predicate). */
+export type VersionKindFilter = 'manual' | 'auto' | 'all'
+
 export interface ListVersionsOptions {
   cursor?: number
   limit?: number
+  /**
+   * Kind filter: `manual` = kind <> AUTO (named + restore), `auto` = kind = AUTO,
+   * `all` = no kind predicate. Takes precedence over `includeAuto` when set.
+   */
+  kind?: VersionKindFilter
+  /**
+   * Backward-compat alias, honoured ONLY when `kind` is absent:
+   * true -> 'all', false/absent -> 'manual' (preserves the legacy default of
+   * excluding auto snapshots).
+   */
   includeAuto?: boolean
+}
+
+/** Per-kind full counts for a doc (independent of limit/cursor). */
+export interface VersionCounts {
+  auto: number
+  manual: number
+  restore: number
+  total: number
 }
 
 /** Input for an auto snapshot written with same-transaction retention pruning. */
@@ -218,19 +239,26 @@ export const docVersionRepo = {
   },
 
   /**
-   * List a doc's versions newest-first with id-cursor pagination. `includeAuto`
-   * controls whether kind=auto snapshots are surfaced (default: excluded). The
-   * cursor is the smallest id already returned; the next page is id < cursor.
+   * List a doc's versions newest-first with id-cursor pagination. The kind
+   * filter selects which streams are returned: `manual` (named + restore),
+   * `auto`, or `all`. `kind` takes precedence; when absent the legacy
+   * `includeAuto` alias maps true -> 'all', false/absent -> 'manual' (the
+   * historical default of excluding auto snapshots). Each kind stream paginates
+   * independently — the cursor is just id < cursor on the filtered set.
    */
   async listByDoc(
     docId: string,
     opts: ListVersionsOptions = {},
   ): Promise<{ items: DocVersion[]; nextCursor: number | null }> {
     const limit = Math.min(100, Math.max(1, Number.isInteger(opts.limit) ? opts.limit! : 20))
+    const filter: VersionKindFilter = opts.kind ?? (opts.includeAuto ? 'all' : 'manual')
     const conds = ['doc_id = ?']
     const args: unknown[] = [docId]
-    if (!opts.includeAuto) {
+    if (filter === 'manual') {
       conds.push('kind <> ?')
+      args.push(KIND_AUTO)
+    } else if (filter === 'auto') {
+      conds.push('kind = ?')
       args.push(KIND_AUTO)
     }
     if (opts.cursor != null) {
@@ -254,6 +282,28 @@ export const docVersionRepo = {
     const items = (hasMore ? rows.slice(0, limit) : rows).map(mapRow)
     const nextCursor = hasMore ? items[items.length - 1]!.id : null
     return { items, nextCursor }
+  },
+
+  /**
+   * Per-kind full counts for a doc, independent of limit/cursor. A single
+   * COUNT(*) ... GROUP BY kind over idx_doc_kind (doc_id, kind, id) maps to the
+   * four reported fields: auto (kind=1), manual (kind=2, NAMED only), restore
+   * (kind=3), and their total. Missing kinds report 0.
+   */
+  async countsByKind(docId: string): Promise<VersionCounts> {
+    const rows = await query<{ kind: number; c: number }>(
+      `SELECT kind, COUNT(*) AS c FROM doc_version WHERE doc_id = ? GROUP BY kind`,
+      [docId],
+    )
+    const counts: VersionCounts = { auto: 0, manual: 0, restore: 0, total: 0 }
+    for (const row of rows) {
+      const n = Number(row.c)
+      if (Number(row.kind) === KIND_AUTO) counts.auto = n
+      else if (Number(row.kind) === KIND_NAMED) counts.manual = n
+      else if (Number(row.kind) === KIND_RESTORE_MARKER) counts.restore = n
+    }
+    counts.total = counts.auto + counts.manual + counts.restore
+    return counts
   },
 
   /** Rename a named snapshot's label. */

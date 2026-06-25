@@ -80,14 +80,32 @@ export async function listVersionsHandler(req: Request, res: Response): Promise<
   const cursor = typeof cursorRaw === 'string' && cursorRaw !== '' ? Number(cursorRaw) : undefined
   const limitRaw = req.query.limit
   const limit = typeof limitRaw === 'string' && limitRaw !== '' ? Number(limitRaw) : undefined
-  const includeAuto = req.query.includeAuto === '1' || req.query.includeAuto === 'true'
 
-  const { items, nextCursor } = await docVersionRepo.listByDoc(guard.meta.doc_id, {
+  // `kind` is the authoritative filter; an explicit bad value is a 400, not a
+  // silent fallback. `includeAuto` is honoured only as a back-compat alias when
+  // `kind` is absent (true -> 'all', false/absent -> 'manual').
+  const kindRaw = req.query.kind
+  let kind: 'manual' | 'auto' | 'all' | undefined
+  let includeAuto: boolean | undefined
+  if (typeof kindRaw === 'string' && kindRaw !== '') {
+    if (kindRaw !== 'manual' && kindRaw !== 'auto' && kindRaw !== 'all') {
+      res.status(400).json({ error: 'invalid_kind' })
+      return
+    }
+    kind = kindRaw
+  } else {
+    includeAuto = req.query.includeAuto === '1' || req.query.includeAuto === 'true'
+  }
+
+  const docId = guard.meta.doc_id
+  const { items, nextCursor } = await docVersionRepo.listByDoc(docId, {
     cursor: Number.isFinite(cursor) ? cursor : undefined,
     limit: Number.isFinite(limit) ? limit : undefined,
+    kind,
     includeAuto,
   })
-  res.status(200).json({ items: items.map(toItem), nextCursor })
+  const counts = await docVersionRepo.countsByKind(docId)
+  res.status(200).json({ items: items.map(toItem), nextCursor, counts })
 }
 
 // ── POST /:docId/versions — named snapshot of the live state (writer) ─────────
