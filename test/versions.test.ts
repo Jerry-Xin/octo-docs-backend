@@ -337,6 +337,138 @@ describe('restore endpoint schema gate', () => {
   })
 })
 
+// ── preview endpoint: backend-decoded PM JSON, schema gate + empty-doc fallback ─
+// Mirrors the restore path's protections (gateSchema + decodeTargetSnapshot) that
+// the preview endpoint previously lacked. Preview reuses the SAME pure helpers and
+// must never touch any restore write path.
+describe('getVersionStateHandler — decoded preview (A3)', () => {
+  function versionRow(overrides: Partial<{ docId: string; schemaVersion: number }> = {}) {
+    return {
+      id: 5,
+      docId: overrides.docId ?? 'd_1',
+      documentName: 'octo:s1:f_default:d_1',
+      kind: 2,
+      name: '',
+      restoredFrom: null,
+      compressed: 1,
+      sizeBytes: 2,
+      schemaVersion: overrides.schemaVersion ?? SCHEMA_VERSION,
+      createdAt: new Date(0),
+      createdBy: 'u_1',
+    }
+  }
+
+  // T1: a brand-new doc snapshotted before any edit stores an empty Y.Doc, which
+  // decodes to a contentless `doc` — preview must return the canonical empty doc
+  // (one empty paragraph), NOT an error.
+  it('returns 200 + canonical empty doc for an empty snapshot (new doc, immediate save)', async () => {
+    vi.mocked(requireDocRole).mockResolvedValue(adminGuard)
+    const emptyState = Y.encodeStateAsUpdate(new Y.Doc())
+    vi.spyOn(docVersionRepo, 'getStateById').mockResolvedValue({
+      version: versionRow() as never,
+      state: emptyState,
+    })
+
+    const res = mockRes()
+    await getVersionStateHandler(req({ docId: 'd_1', versionId: '5' }), res as never)
+
+    expect(res.statusCode).toBe(200)
+    expect(res.headers['Content-Type']).toBeUndefined() // JSON, not octet-stream
+    const body = res.body as { doc: { content?: unknown[] }; schemaVersion: number; docVersionSeq: number }
+    expect(body.doc.content).toHaveLength(1)
+    expect(paragraphTexts(body.doc)).toEqual([''])
+    expect(body.schemaVersion).toBe(SCHEMA_VERSION)
+    expect(body.docVersionSeq).toBe(5)
+
+    vi.mocked(docVersionRepo.getStateById).mockRestore()
+  })
+
+  // T2: a snapshot from a NEWER schema cannot be safely loaded → 409, consistent
+  // with the restore path's error code.
+  it('returns 409 version_schema_newer when the target schema is newer', async () => {
+    vi.mocked(requireDocRole).mockResolvedValue(adminGuard)
+    vi.spyOn(docVersionRepo, 'getStateById').mockResolvedValue({
+      version: versionRow({ schemaVersion: SCHEMA_VERSION + 1 }) as never,
+      state: stateFromPM({ type: 'doc', content: [para('A')] }),
+    })
+
+    const res = mockRes()
+    await getVersionStateHandler(req({ docId: 'd_1', versionId: '5' }), res as never)
+
+    expect(res.statusCode).toBe(409)
+    expect((res.body as { error: string }).error).toBe('version_schema_newer')
+
+    vi.mocked(docVersionRepo.getStateById).mockRestore()
+  })
+
+  // T3: a normal non-empty snapshot decodes to its exact PM JSON content.
+  it('returns 200 with the decoded PM JSON for a normal non-empty version', async () => {
+    vi.mocked(requireDocRole).mockResolvedValue(adminGuard)
+    vi.spyOn(docVersionRepo, 'getStateById').mockResolvedValue({
+      version: versionRow() as never,
+      state: stateFromPM({ type: 'doc', content: [para('hello'), para('world')] }),
+    })
+
+    const res = mockRes()
+    await getVersionStateHandler(req({ docId: 'd_1', versionId: '5' }), res as never)
+
+    expect(res.statusCode).toBe(200)
+    const body = res.body as { doc: unknown; schemaVersion: number; docVersionSeq: number }
+    expect((body.doc as { type: string }).type).toBe('doc')
+    expect(paragraphTexts(body.doc)).toEqual(['hello', 'world'])
+    expect(body.docVersionSeq).toBe(5)
+
+    vi.mocked(docVersionRepo.getStateById).mockRestore()
+  })
+
+  // T4: a versionId belonging to another doc is hidden behind 404 (no existence leak).
+  it('returns 404 not_found for a cross-doc versionId', async () => {
+    vi.mocked(requireDocRole).mockResolvedValue(adminGuard)
+    vi.spyOn(docVersionRepo, 'getStateById').mockResolvedValue({
+      version: versionRow({ docId: 'd_other' }) as never,
+      state: stateFromPM({ type: 'doc', content: [para('A')] }),
+    })
+
+    const res = mockRes()
+    await getVersionStateHandler(req({ docId: 'd_1', versionId: '5' }), res as never)
+
+    expect(res.statusCode).toBe(404)
+    expect((res.body as { error: string }).error).toBe('not_found')
+
+    vi.mocked(docVersionRepo.getStateById).mockRestore()
+  })
+
+  it('returns 400 invalid_version_id for a non-positive-integer versionId', async () => {
+    vi.mocked(requireDocRole).mockResolvedValue(adminGuard)
+    const res = mockRes()
+    await getVersionStateHandler(req({ docId: 'd_1', versionId: 'abc' }), res as never)
+    expect(res.statusCode).toBe(400)
+    expect((res.body as { error: string }).error).toBe('invalid_version_id')
+  })
+
+  // T5: preview reuses only the PURE decode helpers — it must NOT touch any restore
+  // write path (no transaction, no createTx, no live-document apply).
+  it('never touches the restore write path (pure decode only)', async () => {
+    vi.mocked(requireDocRole).mockResolvedValue(adminGuard)
+    vi.spyOn(docVersionRepo, 'getStateById').mockResolvedValue({
+      version: versionRow() as never,
+      state: stateFromPM({ type: 'doc', content: [para('A')] }),
+    })
+    const createTxSpy = vi.spyOn(docVersionRepo, 'createTx')
+
+    const res = mockRes()
+    await getVersionStateHandler(req({ docId: 'd_1', versionId: '5' }), res as never)
+
+    expect(res.statusCode).toBe(200)
+    expect(transaction).not.toHaveBeenCalled()
+    expect(createTxSpy).not.toHaveBeenCalled()
+    expect(applyRestoreToLiveDoc).not.toHaveBeenCalled()
+
+    createTxSpy.mockRestore()
+    vi.mocked(docVersionRepo.getStateById).mockRestore()
+  })
+})
+
 // ── gzip round-trip through the repo (compress on write, decompress on read) ──
 describe('docVersionRepo gzip round-trip (§4 state_blob)', () => {
   it('create gzips the state; getStateById gunzips back to identical bytes', async () => {
