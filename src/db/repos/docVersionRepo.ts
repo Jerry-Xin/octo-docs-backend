@@ -93,6 +93,20 @@ export interface ListVersionsOptions {
   includeAuto?: boolean
 }
 
+/** Input for an auto snapshot written with same-transaction retention pruning. */
+export interface CreateAutoInput {
+  docId: string
+  documentName: string
+  /** Raw (uncompressed) Yjs state = Y.encodeStateAsUpdate(doc) at snapshot time. */
+  state: Uint8Array
+  schemaVersion: number
+  createdBy: string
+  /** Keep at most the most-recent N auto rows for this doc (AUTO_RETAIN_COUNT). */
+  retainCount: number
+  /** Drop auto rows older than this many days (AUTO_RETAIN_DAYS). */
+  retainDays: number
+}
+
 export const docVersionRepo = {
   /**
    * Insert a snapshot row within an existing transaction; returns the DB-assigned
@@ -124,6 +138,62 @@ export const docVersionRepo = {
   /** Insert a snapshot row (standalone transaction); returns the new id. */
   async create(input: CreateVersionInput): Promise<number> {
     return transaction((tx) => this.createTx(tx, input))
+  },
+
+  /**
+   * Insert a KIND_AUTO snapshot and prune stale auto rows in ONE transaction
+   * (§5.4 / §0-A A4-2). Doing both under a single transaction avoids the race
+   * where two concurrent afterStoreDocument writers prune each other's rows.
+   *
+   * Two prune passes, both pinned to `kind = KIND_AUTO` as a HARD constraint:
+   * KIND_NAMED / KIND_RESTORE_MARKER rows are NEVER eligible for deletion.
+   *   1. by count — keep the most-recent `retainCount` auto rows (ORDER BY id
+   *      DESC for a stable "latest N"). MySQL forbids referencing the target
+   *      table directly in a DELETE subquery, so the keep-set is wrapped in an
+   *      aliased derived table.
+   *   2. by age  — drop auto rows older than `retainDays` days.
+   * Both run on the existing idx_doc_kind (doc_id, kind, id) index.
+   *
+   * `retainCount` / `retainDays` are clamped to non-negative integers and
+   * inlined into the SQL: mysql2 `.execute()` (prepared statements) rejects a
+   * `?` bind for LIMIT / INTERVAL with ER_WRONG_ARGUMENTS, and the clamped
+   * integers carry no injection surface (same rationale as listByDoc's LIMIT).
+   */
+  async createAutoWithPrune(input: CreateAutoInput): Promise<number> {
+    const keep = Math.max(1, Math.floor(input.retainCount))
+    const days = Math.max(0, Math.floor(input.retainDays))
+    return transaction(async (tx) => {
+      const id = await this.createTx(tx, {
+        docId: input.docId,
+        documentName: input.documentName,
+        kind: KIND_AUTO,
+        state: input.state,
+        schemaVersion: input.schemaVersion,
+        createdBy: input.createdBy,
+      })
+      // 1. count-based prune (keep most-recent N auto rows for this doc).
+      await tx.query(
+        `DELETE FROM doc_version
+         WHERE doc_id = ? AND kind = ?
+           AND id NOT IN (
+             SELECT id FROM (
+               SELECT id FROM doc_version
+               WHERE doc_id = ? AND kind = ?
+               ORDER BY id DESC
+               LIMIT ${keep}
+             ) AS keep
+           )`,
+        [input.docId, KIND_AUTO, input.docId, KIND_AUTO],
+      )
+      // 2. age-based prune (drop auto rows older than retainDays).
+      await tx.query(
+        `DELETE FROM doc_version
+         WHERE doc_id = ? AND kind = ?
+           AND created_at < NOW() - INTERVAL ${days} DAY`,
+        [input.docId, KIND_AUTO],
+      )
+      return id
+    })
   },
 
   /** Metadata for one version (no blob). Returns null if absent. */
