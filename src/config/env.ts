@@ -108,6 +108,10 @@ export const config = {
     uploadUrlTtlSeconds: num('ATTACHMENT_UPLOAD_URL_TTL_SECONDS', 300),
     // TTL for re-issued signed GET (read) URLs (§3.5 step 5).
     readUrlTtlSeconds: num('ATTACHMENT_READ_URL_TTL_SECONDS', 600),
+    // Hard cap on the batch resolve endpoint (§3.3 RES-1). A reader can request
+    // a fresh signed URL for every attachId in one call; the cap bounds the
+    // presign abuse surface. Over-cap requests are rejected, never truncated.
+    maxResolveBatch: num('ATTACHMENT_MAX_RESOLVE_BATCH', 200),
     // Size caps are tiered by MIME (§3.5). The tier is chosen by the backend
     // from the 'image/' prefix — never trusted from the client — and both tiers
     // hard-cap. The split exists because images render inline (kept small for
