@@ -67,6 +67,19 @@ export const config = {
     host: str('REDIS_HOST', '127.0.0.1'),
     port: num('REDIS_PORT', 6379),
     prefix: str('REDIS_PREFIX', 'octo-docs'),
+    // Optional AUTH password. Empty => no AUTH (the default in this
+    // environment); read here so turning AUTH on later is a deploy-time env
+    // change, never a code change. Never logged.
+    password: str('REDIS_PASSWORD', ''),
+    // Negotiate TLS (rediss) for the Redis connection. Off by default; set
+    // REDIS_TLS=1 when Redis is fronted by TLS so the client establishes a
+    // secure channel instead of failing the handshake.
+    tls: bool('REDIS_TLS', false),
+    // Connection-registry node liveness TTL (seconds). Each node refreshes its
+    // liveness key on half this cadence; connections owned by a node whose key
+    // has expired are treated as dead and reaped on read. Bounds the dead-node
+    // registry leak seen after a non-graceful shutdown (XIN-79).
+    nodeTtlSeconds: num('REDIS_NODE_TTL_SECONDS', 30),
   },
 
   collabToken: {
