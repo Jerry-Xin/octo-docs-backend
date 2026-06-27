@@ -1,7 +1,7 @@
 # `@octo/whiteboard-schema` (frozen shared package)
 
 > **Canonical source:** the package now lives in its own frozen, versioned repo
-> — `boris-clark/octo-whiteboard-schema` @ **v0.1.0** (`WB_SCHEMA_VERSION = 1`),
+> — `boris-clark/octo-whiteboard-schema` @ **v0.2.0** (`WB_SCHEMA_VERSION = 2`),
 > so the front-end (XIN-25) can import it directly. The files in this directory
 > are a **byte-identical mirror** kept here so the back-end builds without a
 > cross-repo dependency; they MUST stay in lockstep with the published package

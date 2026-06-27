@@ -116,6 +116,42 @@ describe('repairLiveDoc — files (§2) dangling image drop + GC', () => {
   })
 })
 
+describe('repairLiveDoc — M-5 dangling containerId cleanup (§3.6.2/§3.6.3)', () => {
+  it('clears a bound-text containerId whose container element was deleted, server-authoritative', () => {
+    // A text bound to a 'box' container; the box was never persisted (deleted), so the
+    // text is an orphaned bound-text with a dangling containerId. Repair must null it
+    // (same shape as the frameId rule) and write the corrected value back to the live doc.
+    const doc = buildDoc({
+      t: clean('t', 'a0', { type: 'text', containerId: 'box' }),
+    })
+    expect(repairLiveDoc(doc)).toBe(true)
+    const t = readElements(doc).get('t')!
+    expect(t.containerId).toBeNull()
+    // idempotent: a second pass has nothing left to fix
+    expect(repairLiveDoc(doc)).toBe(false)
+  })
+
+  it('keeps a containerId whose container element survives (no churn)', () => {
+    const doc = buildDoc({
+      box: clean('box', 'a0'),
+      t: clean('t', 'a1', { type: 'text', containerId: 'box' }),
+    })
+    // both elements are already canonical -> no corrective transaction
+    expect(repairLiveDoc(doc)).toBe(false)
+    expect(readElements(doc).get('t')!.containerId).toBe('box')
+  })
+
+  it('clears containerId but preserves unknown fields on the orphaned text (§6)', () => {
+    const doc = buildDoc({
+      t: clean('t', 'a0', { type: 'text', containerId: 'gone', boundFlavor: { keep: 1 } }),
+    })
+    expect(repairLiveDoc(doc)).toBe(true)
+    const t = readElements(doc).get('t')!
+    expect(t.containerId).toBeNull()
+    expect(t.boundFlavor).toEqual({ keep: 1 })
+  })
+})
+
 describe('attachWhiteboardRepair — live observer (§4.1 gates 1 & 3)', () => {
   it('repairs a user write and does not self-excite (origin skip)', () => {
     const doc = buildDoc({})

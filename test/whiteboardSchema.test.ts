@@ -77,6 +77,26 @@ describe('@octo/whiteboard-schema normalizeElement (XIN-16 §1/§4/§6)', () => 
     expect(n.frameId).toBeNull()
   })
 
+  it('clears a dangling containerId and keeps a live one (M-5, same shape as frameId)', () => {
+    // Orphaned bound-text: its container element was deleted, so containerId dangles -> null.
+    const orphan = normalizeElement(
+      { id: 't', type: 'text', containerId: 'gone-container' },
+      { elementIds: new Set(['t']) },
+    )!
+    expect(orphan.containerId).toBeNull()
+
+    // Container still present -> containerId preserved verbatim.
+    const bound = normalizeElement(
+      { id: 't', type: 'text', containerId: 'box' },
+      { elementIds: new Set(['t', 'box']) },
+    )!
+    expect(bound.containerId).toBe('box')
+
+    // No elementIds context (the survivor pass) -> containerId untouched (not pruned).
+    const noCtx = normalizeElement({ id: 't', type: 'text', containerId: 'box' })!
+    expect(noCtx.containerId).toBe('box')
+  })
+
   it('drops image elements whose fileId is dangling (when fileIds ctx given)', () => {
     const present = { fileIds: new Set(['f1']) }
     expect(normalizeElement({ id: 'i', type: 'image', fileId: 'f1' }, present)).not.toBeNull()
