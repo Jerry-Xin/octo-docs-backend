@@ -1577,6 +1577,8 @@ process.on('SIGTERM', async () => {
 
 类比 `@octo/docs-schema`（本仓 `src/schema/index.ts` 为其本地 stand-in），白板新建冻结共享包，**前端 binding / 后端 repair 扩展 / 后端 Agent 转换三处 import 同一份**，严禁任一侧硬编码。本仓落点 `src/whiteboard/schema/`，导出：`ELEMENTS_FIELD` / `FILES_FIELD` / `WB_SCHEMA_VERSION` / `WB_ELEMENT_TYPES` / `normalizeElement` 规则集（纯函数）/ `elementSupersedes`（CAS）/ `buildWhiteboardName` / `parseWhiteboardName` / `REPAIR_ORIGIN` / `REPAIR_CLIENT_ID`。包内不依赖 Yjs（前端可原样 vendor）；touch Yjs 的 Y.Map↔element/file 适配在 `src/whiteboard/ydoc.ts`（仅后端）。
 
+`normalizeElement` 的悬空引用剔除覆盖 **`boundElements` / `frameId` / `containerId`** 三者（一律「指向不存活元素 → 剔除 / 置 `null`」，与 frameId 同形），其中 `containerId`（绑定文本的容器元素被删后置 `null`）是 M-5 新增规则。当前 **`WB_SCHEMA_VERSION = 2`**——M-5 将 containerId 清理纳入 normalize 规则时按冻结包策略 1→2 bump（见 §11.5）。
+
 ### 11.3 服务端权威 repair（BE-3，契约 §4）
 
 **服务端权威 repair = Hocuspocus 后端扩展，owner 节点单一内存副本上的 `REPAIR_ORIGIN` 修正事务，是 repair 结果的唯一写回方**；前端 binding 只做本地临时 / 渲染前防御 normalize，**绝不写回 Y.Doc**。本仓 `src/whiteboard/repair.ts` 在 `afterLoadDocument`（白板键）挂载 observer 并先跑一次冷启收敛，`beforeUnloadDocument` 卸载。三道防自激闸：
@@ -1585,7 +1587,7 @@ process.on('SIGTERM', async () => {
 2. **diff 判空**：`normalizeElement` 后与现值逐字段深比，完全相等不写；干净文档**不开任何事务**（幂等：`normalize(normalize(x)) === normalize(x)`）。
 3. **只改变更键**：从 observe `event` 取本次变更元素 id 集做规整，不全量扫图。
 
-repair 事务为服务端 origin、无 client ctx，不受 `beforeHandleMessage` epoch 复核拦截（§4.5），符合「服务端权威」语义；权限裁决只作用于客户端来源写。repair 职责含：`normalizeElement` 规则（补 / 修 version·versionNonce·index、钳制非法数值、剔除悬空 boundElements/frameId、**未知字段原样保留**）、**丢弃指向不存在 file 的 image 元素**、**GC 无元素引用的 file**（依赖 §11.1 的 `Y.Map('files')`）。`normalizeElement` 规则集与前端本地防御**共用冻结包同一份**，区别只在谁有权写回。
+repair 事务为服务端 origin、无 client ctx，不受 `beforeHandleMessage` epoch 复核拦截（§4.5），符合「服务端权威」语义；权限裁决只作用于客户端来源写。repair 职责含：`normalizeElement` 规则（补 / 修 version·versionNonce·index、钳制非法数值、剔除悬空 boundElements/frameId/containerId、**未知字段原样保留**）、**丢弃指向不存在 file 的 image 元素**、**GC 无元素引用的 file**（依赖 §11.1 的 `Y.Map('files')`）。`normalizeElement` 规则集与前端本地防御**共用冻结包同一份**，区别只在谁有权写回。悬空 `containerId` 清理为 M-5 新增（`WB_SCHEMA_VERSION` 1→2，见 §11.5）。
 
 ### 11.4 Agent 写入（BE-4，契约 §5）
 
@@ -1594,6 +1596,13 @@ Agent 走方式 A（owner 节点 `openDirectConnection` + Yjs 事务）写入同
 ### 11.5 版本 / 兼容（BE-5，契约 §6）
 
 `WB_SCHEMA_VERSION` 归属冻结包，**与 PM `SCHEMA_VERSION=15` 严格隔离**；白板 `doc_version.schema_version` 走 `WB_SCHEMA_VERSION`，`gateSchema` 不与 PM 版本混用。未知字段透传三端一致（前端 binding / 服务端 repair / Agent 转换都只修已知字段、未知字段原样保留）。
+
+**版本记录**：`WB_SCHEMA_VERSION` 历经 v1 → v2：
+
+- **v1**：基线——id/type 校验、version/versionNonce 确定性补齐、数值钳制、fractional-index 校验、悬空 `boundElements` + `frameId` 剔除、悬空 image 丢弃、孤儿 file GC。
+- **v2（M-5）**：normalize 规则新增「清理悬空 `containerId`」（绑定文本的容器元素被删 → `containerId: null`，与 v1 `frameId` 同形）。按冻结包策略 1→2 bump，FE/BE 同步发布，无新增元素类型、未知字段透传不变。
+
+冻结包策略：**布局或 `normalizeElement` 规则变更必须 bump `WB_SCHEMA_VERSION`，FE/BE 同步发布**（不留单侧新规则的灰度窗口）。
 
 ### 11.6 auto 崩溃恢复快照（XIN-26 item 5）
 
@@ -1604,10 +1613,10 @@ v1 保留白板的 auto 快照崩溃恢复点（纯后端）。`deriveDocId` 由
 下列后端单测覆盖白板 v1 M2（与契约 §10 / XIN-15 ③ 对齐）：
 
 - **白板键放行矩阵**：`parseDocumentName` 5 段 `:wb:` 非对称判别；鉴权 / token 签发 / recheck / 路由对白板键放行（不再 4403）。
-- **`normalizeElement` 规则**：version/versionNonce 确定性补齐、数值钳制、index 校验、悬空 binding/frameId 剔除、悬空 image 丢弃、未知字段透传、幂等、不可变输入。
+- **`normalizeElement` 规则**：version/versionNonce 确定性补齐、数值钳制、index 校验、悬空 binding/frameId/containerId 剔除、悬空 image 丢弃、未知字段透传、幂等、不可变输入。
 - **repair 防自激**：diff 判空（干净文档零事务）、`origin === REPAIR_ORIGIN` 跳过（live observer 不自激成环）、变更键 scoping、悬空 image 丢弃 + 悬空 file GC。
 - **M-11 修复写回确定性单测（XIN-21，对应前端 T20）**：**同一非法态（同一份非法 Y.Doc 元素集），在 N ≥ 3 个不同 worker / Hocuspocus 实例上各自冷启跑服务端权威 repair，必须产出 byte 级一致的结果**——`encodeStateAsUpdate` 两两 byte 相等、同一 fractional-index（z-order）key 序、同一存活元素集、任两实例合并幂等（已收敛）。
-  - **验证方法**：构造一份含非法字段（坏 version / NaN 数值 / 缺 index / 未知 type / 悬空 image / 孤儿 file）的持久化 Y.Doc 二进制（一份 DB blob），在 N 个独立实例上分别 `repairWhiteboardState(blob)`，断言全部输出 byte 相等 + z-order key 序一致 + 存活元素集一致 + 两两合并后规范再编码不变。
+  - **验证方法**：构造一份含非法字段（坏 version / NaN 数值 / 缺 index / 未知 type / 悬空 image / 孤儿 file / 悬空 containerId）的持久化 Y.Doc 二进制（一份 DB blob），在 N 个独立实例上分别 `repairWhiteboardState(blob)`，断言全部输出 byte 相等 + z-order key 序一致 + 存活元素集一致 + 悬空 containerId 被清为 null（M-5 真覆盖）+ 两两合并后规范再编码不变。
   - **确定性关键**：repair 冷启写回使用**固定保留的 `REPAIR_CLIENT_ID`**，使各实例新建 struct 的 client 归属一致——这是「服务端权威唯一写回 + 跨集群靠 diff 判空兜底」在 failover / 多 owner 场景 byte 收敛的支点。控制用例验证：不固定 client id 时两实例 repair 同输入会发散，固定后收敛。
   - 本条**不被** repair 幂等 / 防自激泛化覆盖，需独立钉死（Ken C12 判定）。
   - 落地：`test/whiteboardRepairDeterminism.test.ts`、`test/whiteboardRepair.test.ts`、`test/whiteboardSchema.test.ts`。

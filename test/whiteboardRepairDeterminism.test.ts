@@ -38,6 +38,12 @@ function buildIllegalState(): Uint8Array {
     put('e_a', { id: 'e_a', type: 'ellipse', version: 'oops' as unknown as number, width: -5 })
     put('e_m', { id: 'e_m', type: 'rectangle', index: 'bad idx!', extraFuture: { k: 1 } })
     put('e_bad', { id: 'e_bad', type: 'wormhole', version: 3 }) // unknown type -> dropped
+    // M-5: a bound text whose container element was deleted -> dangling
+    // containerId. The container 'e_ghost' is never inserted, so repair must
+    // clear containerId to null (same shape as the frameId rule). This is the
+    // only element exercising the M-5 clear path in the determinism suite, so
+    // its presence is what proves M-5 converges byte-identically across nodes.
+    put('e_txt', { id: 'e_txt', type: 'text', version: 1, versionNonce: 11, index: 'a2', containerId: 'e_ghost' })
     put('img_ok', { id: 'img_ok', type: 'image', version: 1, versionNonce: 7, index: 'a0', fileId: 'f_ok' })
     put('img_dangling', { id: 'img_dangling', type: 'image', version: 1, versionNonce: 7, fileId: 'missing' })
     const f = new Y.Map()
@@ -93,7 +99,19 @@ describe('BE-M11 repair write-back determinism', () => {
     const doc = decode(results[0].state)
     const ids = [...readElements(doc).keys()].sort()
     doc.destroy()
-    expect(ids).toEqual(['e_a', 'e_m', 'e_z', 'img_ok'])
+    expect(ids).toEqual(['e_a', 'e_m', 'e_txt', 'e_z', 'img_ok'])
+  })
+
+  it('clears the dangling containerId (M-5) byte-identically across instances', () => {
+    // The repaired e_txt must have its dangling containerId nulled, and because
+    // this is part of the byte-equal output above, every instance agrees — i.e.
+    // the M-5 clear path is exercised AND deterministic, not just unit-tested.
+    for (let i = 0; i < N; i++) {
+      const doc = decode(results[i].state)
+      const txt = readElements(doc).get('e_txt')!
+      doc.destroy()
+      expect(txt.containerId).toBeNull()
+    }
   })
 
   it('produces an identical fractional-index (z-order) key sequence across instances', () => {
