@@ -1,5 +1,13 @@
 # `@octo/whiteboard-schema` (frozen shared package)
 
+> **Canonical source:** the package now lives in its own frozen, versioned repo
+> — `boris-clark/octo-whiteboard-schema` @ **v0.1.0** (`WB_SCHEMA_VERSION = 1`),
+> so the front-end (XIN-25) can import it directly. The files in this directory
+> are a **byte-identical mirror** kept here so the back-end builds without a
+> cross-repo dependency; they MUST stay in lockstep with the published package
+> (bump together, never edit one side only). Once the package's permanent home
+> is ratified, the back-end will depend on it directly instead of mirroring.
+
 This directory is the source of the **frozen shared whiteboard schema package**
 defined by the XIN-16 single-authority contract (§3). It is the whiteboard
 analogue of `@octo/docs-schema` (which lives in this repo as the local stand-in
