@@ -80,7 +80,7 @@ export async function getDocHandler(req: Request, res: Response) {
 }
 
 /** GET /api/v1/docs — list docs the caller owns or is a member of. */
-docsRouter.get('/', async (req: Request, res: Response) => {
+export async function listDocsHandler(req: Request, res: Response) {
   const uid = req.uid!
   const spaceId = typeof req.query.spaceId === 'string' ? req.query.spaceId : undefined
   const folderId = typeof req.query.folderId === 'string' ? req.query.folderId : undefined
@@ -98,9 +98,15 @@ docsRouter.get('/', async (req: Request, res: Response) => {
       ownerId: d.owner_id,
       role: roleName(Number(d.role)),
       updatedAt: d.updated_at,
+      // docType is authoritative for shell selection (rich-text vs whiteboard) and
+      // is visible to every read-permission member, not just the owner — the list
+      // is membership-scoped, so each returned row is already one the caller may
+      // read. Mirrors the single-doc GET, which has always surfaced docType.
+      docType: d.doc_type,
     })),
   })
-})
+}
+docsRouter.get('/', listDocsHandler)
 
 // Registered after GET '/' so the collection route is matched distinctly from
 // the single-doc route (Express treats '/' and '/:docId' as separate paths).
