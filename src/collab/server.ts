@@ -13,6 +13,7 @@ import { Database } from '@hocuspocus/extension-database'
 import { Redis } from '@hocuspocus/extension-redis'
 import { Logger } from '@hocuspocus/extension-logger'
 import { config } from '../config/env.js'
+import { redisAuthOptions } from '../db/redis.js'
 import { persistence } from './persistence.js'
 import { authenticate, type AuthContext } from './authenticate.js'
 import { connectionRegistry } from '../permission/connectionRegistry.js'
@@ -94,6 +95,10 @@ export function createServer() {
         host: config.redis.host,
         port: config.redis.port,
         prefix: config.redis.prefix, // multi-product key isolation (§2.1)
+        // AUTH/TLS overlay (read from env); empty by default in this
+        // environment so the broadcast bus keeps working when AUTH is off, and
+        // negotiates password/TLS the moment it is enabled.
+        options: redisAuthOptions(),
       }),
     ],
 

@@ -19,7 +19,8 @@ import { createServer, setEpochWatermark } from './collab/server.js'
 import { createApp } from './api/app.js'
 import { epochInvalidateChannel, currentEpoch, invalidateEpochCache, type InvalidateEvent } from './permission/epoch.js'
 import { closePool } from './db/pool.js'
-import { closeRedis } from './db/redis.js'
+import { closeRedis, redisConnectionOptions, attachRedisLogging } from './db/redis.js'
+import { connectionRegistry } from './permission/connectionRegistry.js'
 
 async function main(): Promise<void> {
   // B1 safety backstop: a stray throw/rejection inside an async hook (e.g. a
@@ -41,7 +42,8 @@ async function main(): Promise<void> {
   // caches and refresh the local watermark. Acting on individual live
   // connections (close 4403 / flip readOnly) is the next layer; the
   // beforeHandleMessage per-principal recheck (§4.5 step 4) is the backstop.
-  const sub = new Redis({ host: config.redis.host, port: config.redis.port })
+  const sub = new Redis(redisConnectionOptions())
+  attachRedisLogging(sub, 'epoch-sub')
   await sub.subscribe(epochInvalidateChannel())
   sub.on('message', (_channel: string, message: string) => {
     void handleInvalidate(message)
@@ -69,6 +71,18 @@ async function main(): Promise<void> {
   // eslint-disable-next-line no-console
   console.log(`[octo-docs] Hocuspocus listening on :${config.hocuspocusPort}`)
 
+  // Refresh this node's liveness key on a fixed cadence (half the TTL so it
+  // never lapses between ticks). The connection registry reaps connections
+  // owned by a node whose liveness key has expired, which bounds the dead-node
+  // leak left behind by a non-graceful shutdown (XIN-79). Seed it immediately so
+  // peers see us as live before the first interval fires.
+  await connectionRegistry.heartbeat(config.hostname)
+  const heartbeatMs = Math.max(1, Math.floor(config.redis.nodeTtlSeconds / 2)) * 1000
+  const heartbeatTimer = setInterval(() => {
+    void connectionRegistry.heartbeat(config.hostname)
+  }, heartbeatMs)
+  heartbeatTimer.unref()
+
   const app = createApp()
   const httpServer = app.listen(config.httpPort, () => {
     // eslint-disable-next-line no-console
@@ -83,6 +97,11 @@ async function main(): Promise<void> {
       await hocuspocus.destroy() // flushes in-memory docs (triggers onStoreDocument)
       // TODO(§5.3 / §9.4): releaseAllDocumentLocks() so a takeover node can
       // become primary writer immediately without waiting for the lock TTL.
+      clearInterval(heartbeatTimer)
+      // Drop our liveness key so peers reap this node's registry entries now
+      // instead of waiting out the TTL (the graceful counterpart to the
+      // crash-leak the TTL guards against).
+      await connectionRegistry.markNodeDown(config.hostname)
       httpServer.close()
       sub.disconnect()
       await closeRedis()
