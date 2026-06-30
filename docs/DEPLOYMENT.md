@@ -135,13 +135,19 @@ The presign driver is selected by `ATTACHMENT_DRIVER`:
 
 - **`local-hmac` (default, dev/staging).** Mints real, TTL-bounded HMAC-signed
   URLs using Node's built-in crypto — no cloud credentials, no SDK. The signing
-  key is `ATTACHMENT_SIGNING_SECRET` (dev fallback `dev-only-change-me`). In
-  production the process **refuses to start** with the dev secret when
-  `NODE_ENV=production` (`requireSafeSigningSecret`), so override it if you keep
-  this driver in prod.
+  key is `ATTACHMENT_SIGNING_SECRET` (dev fallback `dev-only-change-me`).
 - **`s3` / `minio` (production object storage).** Signs real AWS SigV4 presigned
   URLs against an S3-compatible endpoint (MinIO or Tencent COS) behind the same
   interface.
+
+> **⚠️ `ATTACHMENT_SIGNING_SECRET` is a fail-fast prod gate for *every* driver.**
+> `requireSafeSigningSecret` runs **unconditionally at config load**
+> (`src/config/env.ts`), independent of `ATTACHMENT_DRIVER`. If
+> `NODE_ENV=production` and `ATTACHMENT_SIGNING_SECRET` is still the dev default
+> `dev-only-change-me`, the process **refuses to start** — and this fires even
+> under `s3`/`minio`, where the HMAC secret is never actually used to sign URLs.
+> So in production you must set a non-default `ATTACHMENT_SIGNING_SECRET`
+> regardless of which driver you run; it is not a `local-hmac`-only concern.
 
 Shared attachment vars:
 
@@ -231,9 +237,13 @@ Apply the full schema once. `migrations/schema.sql` holds the complete
 mysql -u <user> -p <database> < migrations/schema.sql
 ```
 
-`schema.sql` only creates tables that do not yet exist; **re-running it on an
-existing database does NOT add columns introduced after the initial install** —
-use the upgrade migrations for that.
+`schema.sql` is a **fresh-install-only** script. Its ten `CREATE TABLE`
+statements are bare — none use `IF NOT EXISTS` — so **re-running it against a
+database that already holds these tables fails immediately**: MySQL aborts on
+the very first `CREATE TABLE` with error **1050 (`Table '...' already exists`)**.
+It does not gracefully skip the tables that are already there. On an existing
+database, never re-run `schema.sql`; apply the incremental
+`migrations/upgrades/` files (below) instead.
 
 ### Existing deployment
 
