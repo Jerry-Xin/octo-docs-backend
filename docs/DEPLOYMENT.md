@@ -116,7 +116,7 @@ vars (those without a fallback) **fail fast at boot** — that is intentional.
 | `COLLAB_TOKEN_TTL_SECONDS` | no (`300`) | collab JWT TTL (5 min) |
 | `OCTO_IDENTITY_MODE` | no (`http`) | `http` (cross-service introspection) or `middleware` |
 | `OCTO_SERVER_BASE_URL` | when `http` | octo-server base for token→uid lookups |
-| `OCTO_SERVER_TOKEN` | optional | service token for octo-server user lookups; empty falls back to the caller's own session token |
+| `OCTO_SERVER_TOKEN` | no (optional, default empty) | Backend service token for octo-server. The backend makes exactly **one** server-side octo-server call — the add-member uid existence check (anti ghost-member) in `members.ts`. Leave it empty by default: that check then uses the caller's own session token, and collaborator name/avatar display is unaffected (the frontend fetches those from octo-server directly with the logged-in user's token). Optional hardening only — setting it lets that one check run without relying on the caller's token; **not required, and not a production must-have**. |
 | `MAX_DOC_BYTES` | no (`10485760`) | single-doc Yjs state hard cap (~10MB) |
 
 > **⚠️ The `MYSQL_PASSWORD` / 504 trap.** When promoting config from a
